@@ -2,29 +2,50 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Crimson Centuries</title>
-  <meta name="description" content="A vampire life-simulation spanning five centuries of London, 1347–1901.">
+  <meta name="description" content="A first-person vampire life-simulation spanning five centuries of a procedural London, 1347–1901.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700;900&family=Cinzel:wght@400;500;600;700&family=IM+Fell+English:ital@0;1&family=IM+Fell+English+SC&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/world.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦇</text></svg>">
 </head>
 <body>
-  <canvas id="fx" aria-hidden="true"></canvas>
-  <div id="moon" aria-hidden="true"></div>
-  <div id="vignette" aria-hidden="true"></div>
+  <canvas id="view" aria-label="The city at night"></canvas>
+  <div id="hud" class="hidden"></div>
   <main id="app"></main>
+  <div id="touch" aria-hidden="true">
+    <div class="t-stick"><div class="t-knob"></div></div>
+    <div class="t-btns">
+      <button data-t="act">Act</button><button data-t="sense">Sense</button><button data-t="run">Run</button>
+      <button data-t="crouch">Skulk</button><button data-t="book">Book</button><button data-t="map">Map</button>
+    </div>
+  </div>
   <div id="modal-root"></div>
   <div id="overlay-root"></div>
   <div id="toasts"></div>
 
+  <script src="vendor/three.min.js"></script>
   <script src="js/data.js"></script>
   <script src="js/audio.js"></script>
   <script src="js/game.js"></script>
+  <script src="js/world/util.js"></script>
+  <script src="js/world/tex.js"></script>
+  <script src="js/world/town.js"></script>
+  <script src="js/world/people.js"></script>
+  <script src="js/world/interior.js"></script>
+  <script src="js/world/world.js"></script>
+  <script src="js/world/hud.js"></script>
   <script src="js/ui.js"></script>
-  <script src="js/fx.js"></script>
-  <script>UI.renderTitle();</script>
+  <script>
+    G.fp = true;
+    G.onHunt = (type, v, x) => World.onHunt(type, v, x);
+    G.onDawn = () => World.burn();
+    G.onNight = () => World.newNight();
+    World.boot();
+    UI.renderTitle();
+  </script>
 </body>
 </html>

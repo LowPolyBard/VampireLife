@@ -77,7 +77,7 @@ const G = (() => {
     return d;
   };
   api.travelCost = target => {
-    if (target === s.loc) return 0;
+    if (api.fp || target === s.loc) return 0;
     if (target === 'haven') return power('nightwings') >= 3 ? 0 : 1;
     return power('nightwings') >= 1 ? 0 : 1;
   };
@@ -125,6 +125,10 @@ const G = (() => {
     api.log(`A hunter has come to London: ${s.hunter.name}.`, 'blood');
     return s.hunter;
   };
+
+  /* ---------------- first-person hooks ---------------- */
+  // The world sets api.fp = true and listens on api.onHunt / api.onDawn / api.onNight.
+  const hook = (type, v, x) => { if (api.onHunt) api.onHunt(type, v, x); };
 
   /* ---------------- applying change ---------------- */
   function addBlood(v) {
@@ -191,7 +195,7 @@ const G = (() => {
       flags: {}, night: {}, histDone: {}, eventsDone: {},
       log: [], victims: [], kills: 0, feeds: 0, ach: {},
       stats: { torpor: 0, huntersSlain: 0, maxGold: 0 },
-      eraId: 'medieval', ending: null,
+      eraId: 'medieval', ending: null, seed: (R() * 1e9) | 0,
     };
     for (const f of Object.keys(origin.inf)) s.inf[f] += origin.inf[f];
     s.hours = api.maxHours();
@@ -264,7 +268,7 @@ const G = (() => {
   }
   api.postAction = postAction;
 
-  function pickEvent(where) {
+  function pickEvent(where, peek) {
     const e = era().id;
     const pool = DATA.EVENTS.filter(ev => {
       if (ev.eras && !ev.eras.includes(e)) return false;
@@ -277,9 +281,10 @@ const G = (() => {
     if (!pool.length) return null;
     const total = pool.reduce((a, ev) => a + (ev.weight || 1), 0);
     let r = R() * total;
-    for (const ev of pool) { r -= ev.weight || 1; if (r <= 0) { s.eventsDone[ev.id] = true; return ev; } }
+    for (const ev of pool) { r -= ev.weight || 1; if (r <= 0) { if (!peek) s.eventsDone[ev.id] = true; return ev; } }
     return pool[0];
   }
+  api.pickEvent = pickEvent;
 
   /* ==================================================================
      Actions
@@ -461,9 +466,13 @@ const G = (() => {
     const hum = pick(Object.keys(DATA.HUMOURS));
     let wary = ri(o.wary[0], o.wary[1]);
     if (s.year <= (s.flags.ginUntil || 0) && o.cls === 'low') wary = Math.max(0, wary - 1);
-    return { name: api.genName(), oid, occ: (e === 'victorian' && o.vn) ? o.vn : o.n, cls: o.cls, role: o.role,
+    const g = FEM.includes(oid) ? 'f' : MASC.includes(oid) ? 'm' : (R() < 0.5 ? 'f' : 'm');
+    return { name: api.genName(g), g, oid, occ: (e === 'victorian' && o.vn) ? o.vn : o.n, cls: o.cls, role: o.role,
       vit: ri(o.vit[0], o.vit[1]), wary, humour: hum, trait: pick(DATA.TRAITS), age: ri(16, 60) };
   }
+  const FEM = ['nun', 'fishwife', 'washer', 'harlot', 'lady', 'factorygirl', 'medium'];
+  const MASC = ['priest', 'friar', 'lord', 'knight', 'watchman', 'sailor', 'docker', 'butcher', 'gravedigger', 'resurrection', 'officer', 'curate', 'dandy'];
+  api.genVessel = did => genVessel(dist(did));
   function bloodMult(v, d) {
     let k = d.vit;
     if (s.clan === 'morvayne' && v.cls === 'low') k *= 0.5;
@@ -501,7 +510,11 @@ const G = (() => {
     });
   }
 
-  function approach(v, d) {
+  // First person: a chosen mortal in the street, with the moment's advantages
+  api.fpHunt = (v, did, mods) => { Snd.play('heart'); approach(v, dist(did), mods || {}); };
+
+  function approach(v, d, mods = {}) {
+    const bonus = mods.bonus || {}, notes = mods.notes || {}, xs = mods.extraSusp || 0;
     const opts = [
       { stat: 'might', label: 'Stalk and seize', sub: 'Might — a hand over the mouth in a dark doorway' },
       { stat: 'allure', label: 'Seduce', sub: 'Allure — a smile, a promise, a quiet garden' },
@@ -510,11 +523,11 @@ const G = (() => {
     if (power('mesmerism') >= 1) opts.push({ stat: 'lore', label: 'Mesmerize', sub: 'Lore — the gaze that empties the mind', extra: 0.27 });
     UI.scene({
       title: v.name, glyph: '☾', cls: 'hunt',
-      text: `${api.an(v.occ).replace(/^a/, 'A')}, perhaps ${v.age} years old, ${v.trait}. Even from here you can taste it: ${DATA.HUMOURS[v.humour].desc}.<br><br>How will you take them?`,
+      text: `${api.an(v.occ).replace(/^a/, 'A')}, perhaps ${v.age} years old, ${v.trait}. Even from here you can taste it: ${DATA.HUMOURS[v.humour].desc}.${mods.witText ? `<br><br><i>${mods.witText}.</i>` : ''}<br><br>How will you take them?`,
       choices: opts.map(o => {
-        const p = huntChance(o.stat, v, o.extra || 0);
-        return { label: o.label, sub: o.sub, chance: p, onPick: () => { const ok = api.roll(p); ok ? feedScene(v, d, o.stat) : failScene(v, d); } };
-      }).concat([{ label: 'Let them pass', onPick: () => postAction(false) }]),
+        const p = huntChance(o.stat, v, (o.extra || 0) + (bonus[o.stat] || 0));
+        return { label: o.label, sub: o.sub + (notes[o.stat] ? ` · ${notes[o.stat]}` : ''), chance: p, onPick: () => { const ok = api.roll(p); ok ? feedScene(v, d, o.stat, xs) : failScene(v, d, xs); } };
+      }).concat([{ label: 'Let them pass', onPick: () => { hook('pass', v); postAction(false); } }]),
     });
   }
 
@@ -535,12 +548,13 @@ const G = (() => {
     const done = (text, d2) => { s.feeds++; result({ title: 'The Feeding', glyph: '♥', text, d: d2, cls: 'blood' }); };
     const choices = [
       { label: 'A gentle sip', sub: `+${sip} blood · leave them dizzy and alive`,
-        onPick: () => { setRes(1); done(`You drink only a little, lick the wound closed, and leave ${v.name} blinking in the lamplight, remembering nothing but a pleasant dream.`, { blood: sip, susp: feedSusp(1, d) + extraSusp, essence: 1 }); } },
+        onPick: () => { setRes(1); hook('sip', v); done(`You drink only a little, lick the wound closed, and leave ${v.name} blinking in the lamplight, remembering nothing but a pleasant dream.`, { blood: sip, susp: feedSusp(1, d) + extraSusp, essence: 1 }); } },
       { label: 'Drink deeply', sub: `+${deep} blood${humDeep ? ' · −1 Humanity' : ''} · they will be abed for a week`,
-        onPick: () => { setRes(1); done(`You drink until their heart stutters, then stop. ${v.name} slumps against the wall, grey-lipped, alive. Probably.`, { blood: deep, humanity: -humDeep, susp: feedSusp(3, d) + extraSusp, essence: 2 }); } },
+        onPick: () => { setRes(1); hook('deep', v); done(`You drink until their heart stutters, then stop. ${v.name} slumps against the wall, grey-lipped, alive. Probably.`, { blood: deep, humanity: -humDeep, susp: feedSusp(3, d) + extraSusp, essence: 2 }); } },
       { label: 'Drain them dry', sub: `+${drain} blood · −${humDrain} Humanity · +${essDrain} Essence`, cls: 'dark',
         onPick: () => {
           setRes(2);
+          hook('drain', v);
           api.addVictim({ name: v.name, occ: v.occ, where: d.names[era().id] });
           if (v.cls === 'holy') api.count('drain_holy');
           if (v.cls === 'high') api.count('drain_high');
@@ -556,6 +570,7 @@ const G = (() => {
       choices.push({ label: `Bind them with your blood`, sub: `Make a ghoul · ${role.name}: ${role.desc} · costs 8 blood`,
         onPick: () => {
           setRes(1);
+          hook('ghoul', v);
           api.addCircle({ kind: 'ghoul', role: v.role, name: v.name, age: v.age, occ: v.occ, loyalty: 55 });
           done(`You drink, and then you open your own wrist and press it to ${v.name}'s lips. They drink too — hesitantly, then greedily. When they look up at you, it is with the terrible devotion of the blood-bound. They are yours.`, { blood: sip - 8, susp: feedSusp(1, d) + extraSusp, humanity: -1 });
         } });
@@ -565,6 +580,7 @@ const G = (() => {
       choices.push({ label: 'Make them part of your herd', sub: `Allure · they will return to you willingly`, chance: p,
         onPick: () => {
           setRes(1);
+          hook('herd', v);
           if (api.roll(p)) done(`You drink gently and whisper to them as you do. ${v.name} will come to your door again, and again, and never quite know why.`, { blood: sip, herd: 1, essence: 1 });
           else done(`You drink gently, but when they wake they flinch from you. Not this one.`, { blood: sip, susp: feedSusp(2, d) });
         } });
@@ -574,17 +590,18 @@ const G = (() => {
       choices });
   }
 
-  function failScene(v, d) {
+  function failScene(v, d, xs = 0) {
     Snd.play('fail');
+    hook('spotted', v);
     const choices = [];
     const fleeHurt = power('nightwings') >= 2 ? 0 : ri(4, 9) * d.danger / 2;
     choices.push({ label: 'Flee into the dark', sub: fleeHurt ? 'you may be hurt; they will talk' : 'you are gone before they can see',
-      onPick: () => result({ title: 'Flight', glyph: '⋀', ok: false, text: `You run. ${v.name}'s screams follow you across the rooftops${fleeHurt ? ', and so does a thrown cobblestone' : ''}.`, d: { health: -fleeHurt, susp: feedSusp(6, d) } }) });
+      onPick: () => { hook('flee', v); result({ title: 'Flight', glyph: '⋀', ok: false, text: `You run. ${v.name}'s screams follow you across the rooftops${fleeHurt ? ', and so does a thrown cobblestone' : ''}.`, d: { health: -fleeHurt, susp: feedSusp(6, d) + xs } }); } });
     const pm = api.chance('might', v.wary + 1);
     choices.push({ label: 'Silence them by force', sub: 'Might · violent and loud', chance: pm, cls: 'dark',
-      onPick: () => api.roll(pm) ? feedScene(v, d, 'might', feedSusp(5, d)) : result({ title: 'A Struggle', glyph: '⚔', ok: false, text: `${v.name} fights like a cornered cat. Someone comes running with a lantern and a blade. You escape, bloodied, with a crowd at your heels.`, d: { health: -15, susp: feedSusp(10, d) } }) });
-    if (power('shadowcraft') >= 2) choices.push({ label: 'Vanish into shadow', sub: 'Shadowcraft', onPick: () => result({ title: 'Gone', glyph: '◐', text: 'The shadows open like a curtain and close behind you. They will swear they imagined you.', d: {} }) });
-    if (power('mesmerism') >= 2) choices.push({ label: 'Make them forget', sub: 'Mesmerism', onPick: () => result({ title: 'Forgotten', glyph: '◉', text: `"You saw nothing," you tell ${v.name}. And they didn't.`, d: {} }) });
+      onPick: () => api.roll(pm) ? feedScene(v, d, 'might', feedSusp(5, d) + xs) : (hook('struggle', v), result({ title: 'A Struggle', glyph: '⚔', ok: false, text: `${v.name} fights like a cornered cat. Someone comes running with a lantern and a blade. You escape, bloodied, with a crowd at your heels.`, d: { health: -15, susp: feedSusp(10, d) + xs } })) });
+    if (power('shadowcraft') >= 2) choices.push({ label: 'Vanish into shadow', sub: 'Shadowcraft', onPick: () => (hook('vanish', v), result({ title: 'Gone', glyph: '◐', text: 'The shadows open like a curtain and close behind you. They will swear they imagined you.', d: {} })) });
+    if (power('mesmerism') >= 2) choices.push({ label: 'Make them forget', sub: 'Mesmerism', onPick: () => (hook('forget', v), result({ title: 'Forgotten', glyph: '◉', text: `"You saw nothing," you tell ${v.name}. And they didn't.`, d: {} })) });
     UI.scene({ title: 'The Hunt Goes Wrong', glyph: '✖', cls: 'hunt',
       text: pick([`${v.name} sees your eyes in the dark — sees what you are — and screams.`, `A dog barks. ${v.name} turns and sees your fangs, and the knife in their hand is already out.`, `At the last moment ${v.name} pulls away, and their cry echoes down the street. Shutters bang open.`]),
       choices });
@@ -603,6 +620,7 @@ const G = (() => {
           else {
             const name = api.genName();
             api.addVictim({ name, occ: 'stranger' });
+            hook('frenzy', null, { name, occ: 'stranger', oid: 'drunk', cls: 'low', humour: 'sanguine', g: R() < 0.5 ? 'f' : 'm', vit: 15, wary: 1, trait: '' });
             result({ title: 'Frenzy', glyph: '☬', ok: false, cls: 'frenzy', text: `When you come back to yourself you are kneeling in an alley, and ${name} is in your arms, and there is blood to your elbows. You do not remember killing them. You remember enjoying it.`, d: { blood: 40, humanity: -5, susp: feedSusp(14, { heat: 1 }) } }, then);
           }
         } },
@@ -611,6 +629,7 @@ const G = (() => {
 
   function dawnCatches() {
     Snd.play('burn');
+    if (api.onDawn) api.onDawn();
     let dmg = 32;
     if (s.clan === 'unclaimed') dmg *= 0.5;
     if (power('ironflesh') >= 2) dmg *= 0.5;
@@ -627,6 +646,7 @@ const G = (() => {
       const travel = where ? api.travelCost(where) : 0;
       const h = hours + travel;
       let ok = avail, why = reason;
+      if (ok && api.fp && where === 'haven' && s.loc !== 'haven') { ok = false; why = 'Only in your haven'; }
       if (ok && s.hours < h) { ok = false; why = 'Not enough night left'; }
       out.push({ id, name, glyph, desc, hours: h, travel, avail: ok, reason: why, ...extra });
     };
@@ -750,6 +770,7 @@ const G = (() => {
 
   api.doCourt = id => {
     const a = api.courtActions().find(x => x.id === id);
+    if (api.fp && id !== 'tribute' && s.loc !== 'elysium') return;
     if (!a || !a.avail) return;
     s.hours -= a.hours;
     Snd.play('click');
@@ -847,7 +868,8 @@ const G = (() => {
   api.hunterActions = () => {
     const h = s.hunter; if (!h) return [];
     const out = [];
-    out.push({ id: 'confront', name: 'Confront the Hunter', hours: 2, avail: h.known && s.hours >= 2, reason: h.known ? 'Not enough night left' : 'You do not know where they sleep' });
+    const atLodging = !api.fp || s.loc === 'lodging';
+    out.push({ id: 'confront', name: 'Confront the Hunter', hours: 2, avail: h.known && s.hours >= 2 && atLodging, reason: !h.known ? 'You do not know where they sleep' : !atLodging ? 'Go to their lodging' : 'Not enough night left' });
     out.push({ id: 'discredit', name: 'Have Them Discredited', hours: 1, avail: s.inf.church >= 40 && s.hours >= 1, reason: 'Needs 40 Church influence', desc: 'Spend 25 Church influence to see them recalled, defrocked or committed.' });
     return out;
   };
@@ -868,6 +890,61 @@ const G = (() => {
     ];
     if (power('mesmerism') >= 3) choices.push({ label: 'Take their memories', sub: 'Mesmerism III · no blood spilled', chance: () => api.chance('lore', diff - 2), run: (x, ok) => { if (ok) { s.hunter = null; s.stats.huntersSlain++; api.count('hunter_slain'); return { text: `${h.name} wakes the next morning with no memory of vampires — or of why they ever came to London.`, d: { susp: -12, prestige: 5 } }; } return hurt('Their faith is a wall your gaze cannot climb.'); } });
     present({ title: h.name, glyph: '✠', text: `The hunter's lodging is a narrow house with garlic on the lintel and salt on the sill. Candlelight in an upper window. ${h.name} is home, and awake.`, choices }, () => postAction(false));
+  };
+
+  /* ---------------- the streets answer back (first person) ---------------- */
+  api.bodyFound = v => {
+    const d = Math.max(1, Math.round(5 * api.susFactor() * [1, 0.8, 0.6, 0.6][power('shadowcraft')]));
+    api.fx({ susp: d });
+    api.log(`The body of ${v.name} was found in the street.`, 'blood');
+    UI.hud();
+    return d;
+  };
+
+  api.watchCatch = (v, then) => {
+    const bribe = money(12);
+    const occ = v.occ || 'night watchman';
+    present({ title: 'The Watch', glyph: '⚿',
+      text: `A hand on your shoulder, a lantern thrust into your face. "${pick(['Now then', 'Hold there', 'Not so fast'])}. What's all this, then?" ${v.name}, ${api.an(occ)}, has a cudgel, a whistle and a great many questions.`,
+      choices: [
+        { label: 'Pay them to forget', sub: `£${bribe}`, req: () => s.gold >= bribe, run: () => ({ text: 'A purse changes hands. The lantern swings away. "Mind how you go, then."', d: { gold: -bribe, susp: 1 } }) },
+        { label: 'Talk your way out', sub: 'Allure', chance: () => api.chance('allure', (v.wary || 5) + 1),
+          run: (x, ok) => ok ? { text: 'A lost gentleman, a wrong turning, a fright in the dark — you are charm itself. They see you to the end of the street and tip their hat.', d: {} }
+            : { text: 'They do not believe a word. You break away and run, and the rattle of the watch follows you across three parishes.', d: { susp: 6 } } },
+        { label: 'Hold their gaze', sub: 'Mesmerism · Lore', req: () => power('mesmerism') >= 1, chance: () => api.chance('lore', (v.wary || 5) - 1, 0.1),
+          run: (x, ok) => ok ? { text: '"You saw no one," you tell them, and their pupils swell to black moons. They walk on, humming.', d: { susp: -2 } }
+            : { text: 'Their eyes slide away from yours. They have been warned about eyes like yours.', d: { susp: 5 } } },
+        { label: 'Break away and run', sub: 'Guile', chance: () => api.chance('guile', v.wary || 5, 0.1),
+          run: (x, ok) => ok ? { text: 'You twist free and are gone into the alleys before the whistle reaches their lips.', d: { susp: 2 } }
+            : { text: 'The cudgel catches you across the back as you run, and the hue and cry goes up behind you.', d: { health: -10, susp: 6 } } },
+        { label: 'Silence them', sub: 'Might · a killing', cls: 'dark', chance: () => api.chance('might', v.wary || 5),
+          run: (x, ok) => {
+            if (ok) { v.slain = true; api.addVictim({ name: v.name, occ, where: api.distName(s.loc) }); return { text: 'It is over before the whistle can sound. You drink, because it would be a waste not to, and leave them in the gutter with their lantern still burning.', d: { humanity: -(3 + Math.floor(s.humanity / 30)), susp: Math.round(12 * api.susFactor()), blood: 14, essence: 2 } }; }
+            return { text: 'They are stronger than they look, and they are not alone. You escape, but bloodied, with the whole parish roused.', d: { health: -20, susp: 10 } };
+          } },
+      ] }, () => { if (then) then(); postAction(false); });
+  };
+
+  api.hunterStreet = cb => {
+    const h = s.hunter;
+    if (!h) { if (cb) cb('gone'); return; }
+    const diff = h.level + 3;
+    let res = 'fled';
+    const killed = txt => { res = 'slain'; s.hunter = null; s.stats.huntersSlain++; api.count('hunter_slain'); api.log(`${h.name} is dead.`, 'blood'); return { text: txt, d: { humanity: -2, susp: -10, prestige: 8, essence: 4 } }; };
+    const hurt = txt => { h.threat += 15; return { text: txt, d: { health: -30, susp: 6 } }; };
+    const choices = [
+      { label: 'Fight them here and now', sub: 'Might', chance: () => api.chance('might', diff),
+        run: (x, ok) => ok ? killed(`Steel and silver and a crossbow bolt that misses by a finger's breadth — and then your hands are around ${h.name}'s throat, and it is done.`) : hurt('A vial of holy water bursts across your face. The world turns white with pain; you flee, blind and smoking.') },
+      { label: 'Lure them into the dark', sub: 'Guile', chance: () => api.chance('guile', diff - 1),
+        run: (x, ok) => ok ? killed(`You let ${h.name} follow you into a blind alley. They realise too late which of you is the hunter.`) : hurt('They do not take the bait. The trap is theirs, and you walk into it.') },
+      { label: 'Flee over the rooftops', sub: power('nightwings') >= 1 ? 'Night Wings' : 'Guile', chance: () => power('nightwings') >= 1 ? 0.95 : api.chance('guile', diff - 2),
+        run: (x, ok) => ok ? { text: 'You are gone before the crossbow comes up — a shadow on the tiles, then nothing.', d: { threat: 5 } } : hurt('A bolt takes you in the back as you climb.') },
+    ];
+    if (power('mesmerism') >= 3) choices.push({ label: 'Take their memories', sub: 'Mesmerism III', chance: () => api.chance('lore', diff - 2),
+      run: (x, ok) => { if (ok) { res = 'gone'; s.hunter = null; s.stats.huntersSlain++; api.count('hunter_slain'); return { text: `${h.name} blinks, lowers the crossbow, and asks you the way to the river. They will leave London in the morning, and never know why.`, d: { susp: -10, prestige: 5 } }; } return hurt('Their faith is a wall your gaze cannot climb.'); } });
+    present({ title: h.name, glyph: '✠', cls: 'frenzy',
+      text: `${h.name} steps out of the dark with a lantern in one hand and a loaded crossbow in the other. "I know what you are," they say quietly. "I have always known. Shall we end this?"`,
+      choices }, () => { if (cb) cb(res); postAction(false); });
   };
 
   /* ==================================================================
@@ -1007,6 +1084,7 @@ const G = (() => {
       if (s.rank < 5) s.princeName = DATA.PRINCES[s.eraId];
       q.push(next => { Snd.play('organ'); UI.scene({ title: era().name, glyph: era().glyph, cls: 'era', eyebrow: `${era().start} — A New Age`, text: `${era().desc}${s.rank < 5 ? `<br><br>The Court of the Night has a new master: <b>${s.princeName}</b>.` : ''}`, choices: [{ label: 'Step into the new age', onPick: next }] }); });
     }
+    if (api.onNight) api.onNight();
     // History
     const hist = DATA.HISTORY.find(h => !s.histDone[h.id] && (s.year > h.year || (s.year === h.year && s.month >= h.month)));
     if (hist) {

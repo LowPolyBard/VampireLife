@@ -9,6 +9,7 @@ const UI = (() => {
   const toasts = document.getElementById('toasts');
 
   let tab = 'city';
+  let bookOpen = false;
   let selDist = null;
   let chronTab = 'journal';
   let current = null;
@@ -32,6 +33,7 @@ const UI = (() => {
 
   function show(sc) {
     current = sc;
+    if (typeof World !== 'undefined') World.modal(true);
     if (!sc.choices || !sc.choices.length) sc.choices = [{ label: 'Continue' }];
     const paras = String(sc.text || '').split(/<br\s*\/?><br\s*\/?>/).filter(Boolean);
     let delay = 0;
@@ -81,9 +83,11 @@ const UI = (() => {
     if (c.onPick) c.onPick();
     if (!current && queue.length) show(queue.shift());
     if (!current && G.s && !G.s.ending) render();
+    if (!current && typeof World !== 'undefined' && World.mode === 'play') World.modal(false);
   }
 
   document.addEventListener('keydown', e => {
+    if (!current && bookOpen && e.key === 'Escape') { closeBook(); return; }
     if (!current) return;
     const n = parseInt(e.key, 10);
     if (n >= 1 && n <= 9) pick(n - 1);
@@ -142,6 +146,8 @@ const UI = (() => {
      ================================================================== */
   function renderTitle() {
     document.body.className = 'on-title';
+    bookOpen = false; HUD.show(false);
+    if (World.mode !== 'title') World.title();
     const has = G.hasSave();
     app.innerHTML = `
       <div class="title-screen">
@@ -159,7 +165,7 @@ const UI = (() => {
     app.querySelector('.t-menu').addEventListener('click', e => {
       const b = e.target.closest('[data-t]'); if (!b) return;
       Snd.init(); Snd.play('click');
-      if (b.dataset.t === 'continue') { if (G.load()) { tab = 'city'; selDist = null; render(); } }
+      if (b.dataset.t === 'continue') { if (G.load()) { tab = 'city'; selDist = null; World.startGame(); render(); duskCard(() => { render(); World.lock(); }); } }
       if (b.dataset.t === 'new') { if (has && !confirm('Begin anew? Your current chronicle will be lost.')) return; startCreation(); }
       if (b.dataset.t === 'codex') codex();
     });
@@ -167,13 +173,12 @@ const UI = (() => {
 
   function codex() {
     scene({ title: 'The Codex', glyph: '☥', cls: 'codex', text: `
-      <b>You are a vampire in London, from the Black Death of 1348 to the turn of the twentieth century.</b> Each turn is one significant night in a passing moon. Winter nights are long; summer nights are cruelly short. Every deed costs hours — and when the candles burn out, you had better be home.
-      <br><br><b>Blood</b> is life. The day's sleep burns it away, and a starving vampire frenzies. <b>Hunt</b> in the districts of the city: choose your vessel, your approach, and how deeply to drink. Each vessel's blood carries a <i>humour</i> — Sanguine, Choleric, Melancholic, Phlegmatic — that strengthens you for two nights.
-      <br><br><b>Humanity</b> is your soul. Killing, cruelty and dark deeds erode it; mercy, love and prayer restore it. At zero, the Beast takes you forever. <b>Suspicion</b> is the city's memory of you. Let it grow and hunters will come — and at 100 threat, they raid your haven by day.
-      <br><br><b>Essence</b> is the wisdom of the blood. Spend it on your attributes and on <b>Disciplines</b>. Your <b>Blood Potency</b> deepens as you age — every forty years.
-      <br><br>Build a <b>Circle</b> of blood-bound ghouls, a mortal lover, childer of your own. Buy <b>Holdings</b> that pay by the moon, and a greater <b>Haven</b>. Win favour at <b>Elysium</b> and climb from Fledgling to Primogen — and then, perhaps, challenge the Prince.
-      <br><br>When the world grows too hot, sink into <b>Torpor</b> for decades. Your wealth grows, the hunters forget, and your blood thickens — but the mortals you love will not be there when you wake.
-      <br><br>Survive to 1901. Or find the road to <b>Golconda</b>. Keys <b>1–9</b> pick choices.` });
+      <b>You are a vampire in London, from the Black Death of 1348 to the turn of the twentieth century.</b> Each night you rise in your haven and walk the city in your own dead skin. The candles at the top of the screen are the hours until dawn; they burn as you walk, and every deed costs more of them. When the last one gutters, you must be back in your coffin — or burn.
+      <br><br><b>Hunting.</b> The city is full of the living, each with a name, a trade and a heartbeat. Hold <b>Q</b> for blood sense: the living glow through walls in the colour of their <i>humour</i> — Sanguine, Choleric, Melancholic, Phlegmatic — each strengthening you for two nights. Walk up to a mortal and press <b>E</b>. Take them from behind, in shadow, with no witnesses, and they will never see you coming. Take them under a lantern in a crowd, and the whole street will scream.
+      <br><br><b>Stealth.</b> The eye at the bottom of the screen shows how exposed you are. Lamps and torches betray you; skulk (<b>C</b>) in the dark to go unseen. Mortals who notice you show a <b>?</b>, then a <b>!</b>. Bodies left in the street are found, and the city remembers — press <b>E</b> on a corpse to drag it into the dark. If the watch gives chase, lose them in the alleys.
+      <br><br><b>Humanity</b> is your soul: killing erodes it, mercy restores it. At zero, the Beast takes you forever. <b>Suspicion</b> brings hunters who stalk the streets and, at 100 threat, raid your haven by day.
+      <br><br><b>The city.</b> Lanterns mark every place of note: taverns, the cathedral, the guildhall, the docks — each with its own deeds. <b>Elysium</b> hides behind a red lantern in Westminster. Your <b>haven</b> is marked ⚰ on your compass; step inside to rest, drink from your herd, see your lover, or sleep in <b>torpor</b> for decades. The city is different in every chronicle, and it is rebuilt with every age.
+      <br><br><b>Keys:</b> WASD move · Mouse look · Shift run · C skulk · Space leap · E act · Q blood sense · R mend flesh · Tab grimoire · M map · Esc pause · 1–9 choose.` });
   }
 
   /* ==================================================================
@@ -284,8 +289,11 @@ const UI = (() => {
         const attrs = {}; for (const k of Object.keys(DATA.ATTRS)) attrs[k] = baseAttr(k) + cr.pts[k];
         G.newGame({ name: cr.name.trim(), origin: cr.origin, clan: cr.clan, attrs });
         tab = 'city'; selDist = null;
+        World.startGame();
         render();
-        duskCard(() => { G.checkAchievements(); render(); });
+        duskCard(() => { G.checkAchievements(); render(); scene({ title: 'The First Night', glyph: '☾', eyebrow: 'How to walk the night',
+          text: `You wake in the dark beneath St Bartholomew's, and you are <span class="blood-word">hungry</span>.<br><br><b>Walk</b> with WASD and the mouse. <b>Run</b> with Shift, <b>skulk</b> with C. Hold <b>Q</b> to smell the blood of the living through walls. Walk up to a mortal and press <b>E</b> to stalk them — from behind, in shadow, with no one watching, is best.<br><br>Every place of note has a lantern at its door. <b>Tab</b> opens your grimoire; <b>M</b> the map. Watch the candles: when the last one gutters, you had better be back in your coffin.`,
+          choices: [{ label: 'Rise' }] }); });
         return;
       }
     } else return;
@@ -355,13 +363,14 @@ const UI = (() => {
       </div>
       <div class="tb-loc">⌖ ${G.distName(s.loc)}</div>
       <div class="tb-btns">
+        <button class="icon-btn close-book" data-ui="close" title="Return to the night (Tab)">✕</button>
         <button class="icon-btn" data-ui="codex" title="The Codex">?</button>
         <button class="icon-btn" data-ui="sound" title="Sound">${Snd.enabled() ? '♪' : '♩̸'}</button>
         <button class="icon-btn" data-ui="menu" title="Menu">☰</button>
       </div>`;
   }
 
-  const TABS = [['city', 'The City', '⌂'], ['haven', 'Haven', '⚰'], ['court', 'Court', '♛'], ['circle', 'Circle', '☍'], ['blood', 'Blood', '♥'], ['holdings', 'Holdings', '⚖'], ['chronicle', 'Chronicle', '✒']];
+  const TABS = [['city', 'Map', '⌖'], ['haven', 'Haven', '⚰'], ['court', 'Court', '♛'], ['circle', 'Circle', '☍'], ['blood', 'Blood', '♥'], ['holdings', 'Holdings', '⚖'], ['chronicle', 'Chronicle', '✒']];
 
   function actionCard(a, kind, where) {
     const chance = a.chance != null ? `<span class="ac-chance ${a.chance >= 0.66 ? 'hi' : a.chance >= 0.4 ? 'mid' : 'lo'}">${pct(a.chance)}</span>` : '';
@@ -384,41 +393,81 @@ const UI = (() => {
   }
 
   function cityTab() {
-    const s = G.s;
-    const d = selDist || (s.loc !== 'haven' && s.loc !== 'elysium' ? s.loc : null);
-    const e = G.era().id;
-    const list = DATA.DISTRICTS.map(x => `
-      <button class="district ${x.id === d ? 'sel' : ''} ${x.id === s.loc ? 'here' : ''}" data-dist="${x.id}">
-        <span class="d-glyph">${x.glyph}</span>
-        <span class="d-name">${x.names[e]}</span>
-        <span class="d-meta"><span title="How watchful the district is">${x.heat >= 1.3 ? 'Watchful' : x.heat <= 0.7 ? 'Lawless' : 'Wary'}</span> · <span title="Danger if a hunt goes wrong">${'†'.repeat(x.danger)}</span></span>
-        ${x.id === s.loc ? '<span class="d-here">you are here</span>' : ''}
-      </button>`).join('');
-    let detail;
-    if (d) {
-      const x = G.dist(d);
-      detail = `
-        <div class="dist-detail">
-          <div class="dd-head"><span class="dd-glyph">${x.glyph}</span><div><h3>${x.names[e]}</h3><p>${x.desc[e]}</p></div></div>
-          <div class="action-list">${G.districtActions(d).map(a => actionCard(a, 'district', d)).join('')}</div>
-        </div>`;
-    } else {
-      detail = `<div class="dist-detail empty"><div class="dd-empty-glyph">☾</div><p>The city lies before you, lamplit and unaware.<br>Choose where to prowl tonight.</p><p class="dim">Travel between districts costs an hour. Keep enough night to return home before dawn.</p></div>`;
-    }
+    const s = G.s, e = G.era().id, town = World.town;
+    const here = World.inHaven() ? 'haven' : s.loc;
+    const wing = G.power('nightwings') >= 1 && !World.inHaven();
+    const list = DATA.DISTRICTS.map(x => {
+      const sites = town.sites.filter(q => q.d === x.id);
+      return `<div class="district-card ${x.id === here ? 'here' : ''}">
+        <div class="dc-head"><span class="d-glyph">${x.glyph}</span><div><div class="d-name">${x.names[e]}${x.id === here ? ' <span class="d-here">you are here</span>' : ''}</div>
+          <div class="d-meta">${x.heat >= 1.3 ? 'Watchful' : x.heat <= 0.7 ? 'Lawless' : 'Wary'} · ${'†'.repeat(x.danger)} · ${x.occ.filter(o => !DATA.OCC[o].eras || DATA.OCC[o].eras.includes(e)).slice(0, 4).map(o => DATA.OCC[o].n).join(', ')}…</div></div>
+          ${wing && x.id !== here ? `<button class="btn small ghost" data-fly="${x.id}" title="Night Wings: fly there in bat-form (10 minutes)">⋀ Take wing</button>` : ''}</div>
+        <p class="dc-desc">${x.desc[e]}</p>
+        <div class="dc-sites">${sites.map(q => `<button class="site-chip" data-wp="${q.id}" title="Mark on your compass"><span>${q.glyph}</span>${q.names[e]}<em>${q.acts.map(a => G.actName(a)).join(', ')}</em></button>`).join('')}</div>
+      </div>`;
+    }).join('');
     return `
-      <div class="city-wrap">
-        <div class="district-list">${list}</div>
-        ${detail}
+      <div class="map-wrap">
+        <div class="map-box"><canvas id="map-canvas" width="512" height="512"></canvas>
+          <div class="map-legend"><span><i class="lg you"></i>You</span><span>⚰ Haven</span><span>♛ Elysium</span><span>◆ Marked</span>${s.hunter && s.hunter.known ? '<span>✠ Hunter</span>' : ''}</div>
+          <div class="map-btns"><button class="btn small ghost" data-wp="haven">◆ Mark my haven</button><button class="btn small ghost" data-wp="elysium">◆ Mark Elysium</button>${s.hunter && s.hunter.known ? '<button class="btn small ghost" data-wp="lodging">◆ Mark the hunter</button>' : ''}</div>
+        </div>
+        <div class="district-cards">${list}</div>
       </div>
       ${retireBar()}`;
   }
 
+  function drawMap() {
+    const cv = document.getElementById('map-canvas'); if (!cv) return;
+    const x = cv.getContext('2d'), town = World.town, N = TOWN.N, T = TOWN.T;
+    const k = cv.width / N, seen = World.exploredMask();
+    const s = G.s;
+    x.fillStyle = '#1c130c'; x.fillRect(0, 0, cv.width, cv.height);
+    const dcol = { cheapside: [120, 96, 60], southwark: [110, 70, 60], stpauls: [96, 96, 90], westminster: [110, 88, 110], docks: [70, 88, 100], whitechapel: [96, 80, 64], graveyard: [70, 96, 70] };
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const id = TOWN.idx(i, j), t = town.type[id], d = TOWN.DIDS[town.dist[id]];
+      const known = seen[id] || t === T.WATER || t === T.WALL;
+      let c;
+      if (t === T.WATER) c = [22, 30, 40];
+      else if (t === T.WALL) c = [14, 10, 8];
+      else if (t === T.LAND) c = [60, 54, 48];
+      else if (TOWN.WALKABLE[t]) { const b = dcol[d]; c = t === T.OPEN ? [b[0] * 0.8, b[1] * 1.1, b[2] * 0.8] : t === T.PLAZA ? [b[0] * 1.5, b[1] * 1.45, b[2] * 1.35] : [b[0] * 1.8, b[1] * 1.7, b[2] * 1.55]; }
+      else { const b = dcol[d]; c = [b[0] * 0.42, b[1] * 0.38, b[2] * 0.36]; }
+      if (!known) c = c.map(v => v * 0.28);
+      x.fillStyle = `rgb(${c.map(v => Math.min(255, v | 0)).join(',')})`;
+      x.fillRect(i * k, j * k, k + 0.5, k + 0.5);
+    }
+    // grain
+    for (let n = 0; n < 2500; n++) { x.fillStyle = `rgba(0,0,0,${Math.random() * 0.12})`; x.fillRect(Math.random() * cv.width, Math.random() * cv.height, 2, 2); }
+    const P = (wx, wz) => [wx / TOWN.CS * k, wz / TOWN.CS * k];
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    const e = G.era().id;
+    x.font = 'bold 13px Cinzel, serif';
+    for (const d of DATA.DISTRICTS) { const c = town.C[d.id]; x.fillStyle = 'rgba(0,0,0,0.6)'; x.fillText(d.names[e].toUpperCase(), (c[0] + 0.5) * k + 1, (c[1] - 2) * k + 1); x.fillStyle = '#e8d8b0'; x.fillText(d.names[e].toUpperCase(), (c[0] + 0.5) * k, (c[1] - 2) * k); }
+    const icon = (g, wx, wz, col, size = 15) => { const [px, py] = P(wx, wz); x.font = `${size}px serif`; x.fillStyle = '#000'; x.fillText(g, px + 1, py + 1); x.fillStyle = col; x.fillText(g, px, py); };
+    for (const q of town.sites) icon(q.glyph, q.door.x, q.door.z, '#d8b070', 13);
+    icon('♛', town.elysium.x, town.elysium.z, '#ff5040', 16);
+    icon('⚰', town.havens[s.haven].x, town.havens[s.haven].z, '#c8a0ff', 16);
+    if (s.hunter && s.hunter.known) icon('✠', town.lodging.x, town.lodging.z, '#ffffff', 16);
+    const wp = World.getWaypoint(); if (wp) icon('◆', wp.x, wp.z, '#ffd070', 15);
+    const pl = World.pl;
+    if (!World.inHaven()) {
+      const [px, py] = P(pl.x, pl.z);
+      x.save(); x.translate(px, py); x.rotate(-pl.yaw);
+      x.fillStyle = '#ff3030'; x.strokeStyle = '#000'; x.lineWidth = 1.5;
+      x.beginPath(); x.moveTo(0, -9); x.lineTo(6, 7); x.lineTo(0, 3); x.lineTo(-6, 7); x.closePath(); x.fill(); x.stroke();
+      x.restore();
+    }
+    // compass rose
+    x.font = 'bold 14px Cinzel, serif'; x.fillStyle = '#e8d8b0'; x.fillText('N', cv.width - 24, 22);
+  }
+
   function retireBar() {
-    const s = G.s, c = G.travelCost('haven');
-    const danger = s.loc !== 'haven' && s.hours <= c;
+    const s = G.s, home = World.inHaven();
+    const danger = !home && s.hours <= 1;
     return `<div class="retire-bar ${danger ? 'danger' : ''}">
-      <span>${s.loc === 'haven' ? 'You are safe in your haven.' : `Returning home takes ${c} hour${c === 1 ? '' : 's'}.`} ${danger ? '<b>Dawn is almost upon you!</b>' : ''}</span>
-      <button class="btn" data-ui="retire">⚰ Retire for the Day</button>
+      <span>${home ? 'You are safe in your haven.' : 'Walk back to your haven before the candles burn out — follow ⚰ on your compass.'} ${danger ? '<b>Dawn is almost upon you!</b>' : ''}</span>
+      ${home ? '<button class="btn" data-ui="retire">⚰ Retire for the Day</button>' : `<button class="btn ghost" data-wp="haven">◆ Mark the way home</button>`}
     </div>`;
   }
 
@@ -438,7 +487,7 @@ const UI = (() => {
       ${retireBar()}
       <div class="torpor-box panel">
         <div><h4>Torpor</h4><p>Sink into the death-sleep for decades. Suspicion, hunters and debts are forgotten; your fortune grows; your blood thickens. Mortals you love will age — or die.</p></div>
-        <button class="btn ghost" data-ui="torpor" ${G.torporOptions().length ? '' : 'disabled'}>⚰ Enter Torpor…</button>
+        <button class="btn ghost" data-ui="torpor" ${G.torporOptions().length && World.inHaven() ? '' : 'disabled'} title="${World.inHaven() ? '' : 'Only from your coffin'}">⚰ Enter Torpor…</button>
       </div>
       ${G.canSeekGolconda() ? `<div class="golconda-box panel"><div><h4>✦ The Road to Golconda</h4><p>The three leaves of the Codex are yours, and your soul is clear. You could walk the road beyond the Beast — and end your chronicle in peace.</p></div><button class="btn" data-ui="golconda">Seek Golconda</button></div>` : ''}
       <h4 class="sec">Improve Your Haven</h4>
@@ -569,7 +618,9 @@ const UI = (() => {
     const s = G.s;
     if (!s) return renderTitle();
     if (s.ending) return renderEnding();
-    document.body.className = 'in-game' + (s.blood < 20 ? ' starving' : '') + (s.hours <= 2 && s.loc !== 'haven' ? ' dawn-near' : '') + (s.humanity < 25 ? ' beastly' : '');
+    document.body.className = 'in-game in-world' + (bookOpen ? ' book-open' : '') + (s.blood < 20 ? ' starving' : '') + (s.humanity < 25 ? ' beastly' : '');
+    HUD.show(true); HUD.refresh();
+    if (!bookOpen) { app.innerHTML = ''; return; }
     const body = { city: cityTab, haven: havenTab, court: courtTab, circle: circleTab, blood: bloodTab, holdings: holdingsTab, chronicle: chronicleTab }[tab]();
     const scrollEl = app.querySelector('.tab-body');
     const sameTab = scrollEl && scrollEl.dataset.tab === tab;
@@ -577,7 +628,7 @@ const UI = (() => {
     const entering = !app.querySelector('.game');
     const essenceAlert = s.essence >= Math.min(...Object.keys(DATA.ATTRS).map(G.attrCost), ...Object.keys(DATA.POWERS).filter(p => G.power(p) < 3).map(G.powerCost));
     app.innerHTML = `
-      <div class="game ${entering ? 'enter' : ''}">
+      <div class="game book ${entering ? 'enter' : ''}">
         <header class="topbar">${topbar()}</header>
         <aside class="sheet panel">${sheet()}</aside>
         <section class="main">
@@ -591,7 +642,11 @@ const UI = (() => {
       </div>`;
     const nb = app.querySelector('.tab-body');
     if (nb) nb.scrollTop = keep;
+    if (tab === 'city') drawMap();
   }
+
+  function openBook(t) { if (t) tab = t; bookOpen = true; World.book(true); Snd.play('page'); render(); }
+  function closeBook() { bookOpen = false; app.innerHTML = ''; World.book(false); Snd.play('page'); render(); }
 
   app.addEventListener('click', e => {
     if (!document.body.classList.contains('in-game') && !document.body.className.startsWith('in-game')) return;
@@ -617,7 +672,9 @@ const UI = (() => {
     if (d.hunter) return G.hunterAct(d.hunter);
     if (d.ui === 'retire') {
       const s = G.s;
+      if (!World.inHaven()) return;
       if (s.hours > 2 && !confirm(`${s.hours} hours of darkness remain. Retire for the day anyway?`)) return;
+      bookOpen = false; World.book(false);
       return G.retire();
     }
     if (d.ui === 'torpor') return torporPrompt();
@@ -625,6 +682,9 @@ const UI = (() => {
     if (d.ui === 'codex') return codex();
     if (d.ui === 'sound') { Snd.toggle(); return render(); }
     if (d.ui === 'menu') return menu();
+    if (d.ui === 'close') return closeBook();
+    if (d.wp) { const sd = World.town.sites.find(x => x.id === d.wp); const h = d.wp === 'haven' ? World.town.havens[G.s.haven] : d.wp === 'elysium' ? World.town.elysium : d.wp === 'lodging' ? World.town.lodging : sd && sd.door; if (h) { World.setWaypoint({ x: h.x, z: h.z, id: d.wp }); toast('Marked on your compass ◆'); render(); } return; }
+    if (d.fly) { if (World.flyTo(d.fly)) closeBook(); return; }
   });
 
   function torporPrompt() {
@@ -634,12 +694,34 @@ const UI = (() => {
         .concat([{ label: 'Not yet', onPick: () => {} }]) });
   }
 
+  function pauseMenu() { menu(); }
+  function settingsMenu() {
+    const S = World.settings;
+    const sensN = { 0.5: 'Slow', 0.75: 'Gentle', 1: 'Normal', 1.5: 'Quick', 2: 'Very quick' };
+    const pixN = ['', 'Fine', 'Clear', 'Grim', 'Crude'];
+    const nightN = { 45: 'Brief (45s an hour)', 75: 'Normal (75s an hour)', 110: 'Long (110s an hour)', 160: 'Endless (160s an hour)' };
+    const cyc = (arr, v) => arr[(arr.indexOf(v) + 1) % arr.length];
+    const again = () => setTimeout(settingsMenu, 0);
+    scene({ title: 'Settings', glyph: '⚙', text: 'Adjust how the night looks and feels.',
+      choices: [
+        { label: `Mouse sensitivity: ${sensN[S.sens] || S.sens}`, onPick: () => { S.sens = cyc([0.5, 0.75, 1, 1.5, 2], S.sens); World.saveSettings(); again(); } },
+        { label: `Pixel size: ${pixN[S.pixel]}`, sub: 'Chunkier pixels are grimmer — and faster', onPick: () => { S.pixel = cyc([1, 2, 3, 4], S.pixel); World.saveSettings(); World.resize(); again(); } },
+        { label: `Length of the night: ${nightN[S.hourSecs] || S.hourSecs + 's'}`, sub: 'Real seconds per hour of darkness', onPick: () => { S.hourSecs = cyc([45, 75, 110, 160], S.hourSecs); World.saveSettings(); again(); } },
+        { label: `Colour grading: ${S.grade ? 'Crimson' : 'Natural'}`, onPick: () => { S.grade = !S.grade; World.saveSettings(); again(); } },
+        { label: `Head bob: ${S.bob ? 'On' : 'Off'}`, onPick: () => { S.bob = !S.bob; World.saveSettings(); again(); } },
+        { label: `Invert mouse: ${S.invert ? 'On' : 'Off'}`, onPick: () => { S.invert = !S.invert; World.saveSettings(); again(); } },
+        { label: `Sound: ${Snd.enabled() ? 'On' : 'Off'}`, onPick: () => { Snd.toggle(); again(); } },
+        { label: 'Done' },
+      ] });
+  }
   function menu() {
-    scene({ title: 'Chronicle Paused', glyph: '☰', text: 'Your progress is saved automatically at every dusk and after every deed.',
+    scene({ title: 'Chronicle Paused', glyph: '☰', text: 'Your progress is saved automatically at every dusk, every deed and every hour.',
       choices: [
         { label: 'Return to the night' },
-        { label: 'Save and return to the title', onPick: () => { G.save(); renderTitle(); } },
-        { label: 'Abandon this chronicle', sub: 'Your save will be erased', cls: 'dark', onPick: () => { if (confirm('Erase this chronicle forever?')) { G.wipe(); renderTitle(); } } },
+        { label: 'Settings', onPick: () => setTimeout(settingsMenu, 0) },
+        { label: 'The Codex · How to Play', onPick: () => setTimeout(codex, 0) },
+        { label: 'Save and return to the title', onPick: () => { G.save(); World.mode = 'none'; renderTitle(); } },
+        { label: 'Abandon this chronicle', sub: 'Your save will be erased', cls: 'dark', onPick: () => { if (confirm('Erase this chronicle forever?')) { G.wipe(); World.mode = 'none'; renderTitle(); } } },
       ] });
   }
 
@@ -649,6 +731,7 @@ const UI = (() => {
   function renderEnding() {
     const s = G.s, e = s.ending;
     document.body.className = 'on-ending ending-' + e.type;
+    bookOpen = false; HUD.show(false); World.mode = 'none'; World.title();
     app.innerHTML = `
       <div class="ending">
         <div class="en-glyph">${e.glyph}</div>
@@ -670,5 +753,5 @@ const UI = (() => {
     document.getElementById('en-again').addEventListener('click', () => { Snd.play('click'); startCreation(); });
   }
 
-  return { scene, toast, render, renderTitle, renderEnding, duskCard, torporCard, codex };
+  return { scene, toast, render, renderTitle, renderEnding, duskCard, torporCard, codex, openBook, closeBook, pauseMenu, torporPrompt, hud: () => HUD.refresh(), get bookOpen() { return bookOpen; } };
 })();

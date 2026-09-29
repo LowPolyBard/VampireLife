@@ -115,13 +115,20 @@ const Snd = (() => {
     g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     o.connect(g).connect(sfxBus); o.start(t); o.stop(t + dur + 0.05);
   }
-  function noise(t, dur, vol, freq = 1200, type = 'lowpass') {
-    const buf = ctx.createBuffer(1, ctx.sampleRate * dur, ctx.sampleRate);
-    const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-    const src = ctx.createBufferSource(); src.buffer = buf;
-    const f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = freq;
-    const g = ctx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(f).connect(g).connect(sfxBus); src.start(t);
+  let noiseBuf = null;
+  function noise(t, dur, vol, freq = 1200, type = 'lowpass', out = sfxBus, q = 1, sweep = null) {
+    if (!noiseBuf) { noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 3, ctx.sampleRate); const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+    const src = ctx.createBufferSource(); src.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = type; f.frequency.setValueAtTime(freq, t); f.Q.value = q;
+    if (sweep) f.frequency.exponentialRampToValueAtTime(sweep, t + dur);
+    const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + Math.min(0.01, dur / 4)); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f).connect(g).connect(out); src.start(t, Math.random() * 2); src.stop(t + dur + 0.05);
+  }
+  function panned(pan, vol) {
+    const g = ctx.createGain(); g.gain.value = vol;
+    const p = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    if (p) { p.pan.value = Math.max(-1, Math.min(1, pan || 0)); g.connect(p).connect(sfxBus); } else g.connect(sfxBus);
+    return g;
   }
 
   const SFX = {
@@ -141,12 +148,56 @@ const Snd = (() => {
     frenzy: t => { for (let i = 0; i < 6; i++) tone(60, t + i * 0.35, 0.15, 'sine', 0.4, 40); noise(t, 1.5, 0.15, 400); },
     burn: t => { noise(t, 2.5, 0.3, 2500, 'highpass'); tone(300, t, 2, 'sawtooth', 0.04, 80); },
     death: t => { [38, 41, 44].forEach(n => tone(N(n), t, 6, 'sawtooth', 0.03)); bell(t, 73, 0.2); },
+    step: (t, o = {}) => {
+      const v = (o.soft ? 0.25 : o.run ? 0.8 : 0.5) * 0.09;
+      const surf = o.surf || 'stone';
+      if (surf === 'stone') { noise(t, 0.07, v, 1600 + Math.random() * 600, 'bandpass', sfxBus, 1.2); noise(t, 0.09, v * 0.9, 180, 'lowpass'); }
+      else if (surf === 'mud') { noise(t, 0.14, v * 1.1, 420, 'lowpass', sfxBus, 2, 250); }
+      else if (surf === 'grass') { noise(t, 0.12, v * 0.8, 3000, 'highpass'); }
+      else { noise(t, 0.08, v, 700, 'bandpass', sfxBus, 3); tone(140 + Math.random() * 30, t, 0.08, 'triangle', v * 0.6); }
+    },
+    land: t => { noise(t, 0.2, 0.08, 200, 'lowpass'); },
+    scream: (t, o = {}) => {
+      const dist = o.dist || 10, vol = Math.max(0.02, 0.22 * (1 - dist / 45));
+      const out = panned(o.pan, vol);
+      const osc = ctx.createOscillator(); osc.type = 'sawtooth';
+      const base = 520 + Math.random() * 300;
+      osc.frequency.setValueAtTime(base, t); osc.frequency.linearRampToValueAtTime(base * 1.7, t + 0.25); osc.frequency.linearRampToValueAtTime(base * 1.2, t + 1.3);
+      const vib = ctx.createOscillator(); vib.frequency.value = 7; const vg = ctx.createGain(); vg.gain.value = 18; vib.connect(vg).connect(osc.frequency);
+      const f1 = ctx.createBiquadFilter(); f1.type = 'bandpass'; f1.frequency.value = 1100; f1.Q.value = 3;
+      const g = ctx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(1, t + 0.08); g.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
+      osc.connect(f1).connect(g).connect(out); osc.start(t); vib.start(t); osc.stop(t + 1.5); vib.stop(t + 1.5);
+    },
+    whistle: t => { for (let i = 0; i < 3; i++) { tone(2300, t + i * 0.28, 0.2, 'sine', 0.05); tone(2450, t + i * 0.28 + 0.1, 0.12, 'sine', 0.04); } },
+    toll: (t, o = {}) => { const n = o.n || 1; for (let i = 0; i < n; i++) bell(t + i * 2.2, 98 + (i % 2) * 0.4, 0.09); },
+    door: t => { tone(90, t, 0.6, 'sawtooth', 0.03, 60); noise(t + 0.45, 0.25, 0.12, 300, 'lowpass'); },
+    lunge: t => { noise(t, 0.35, 0.12, 400, 'bandpass', sfxBus, 1, 2400); tone(70, t + 0.2, 0.5, 'sine', 0.25, 45); },
+    drag: t => { noise(t, 1.6, 0.06, 500, 'lowpass', sfxBus, 1, 250); },
+    wings: t => { for (let i = 0; i < 10; i++) noise(t + i * 0.07, 0.06, 0.08, 900, 'bandpass', sfxBus, 2); },
+    heartbeat: t => { tone(55, t, 0.16, 'sine', 0.3, 40); tone(50, t + 0.22, 0.18, 'sine', 0.22, 38); },
+    sting: t => { tone(110, t, 1.2, 'sawtooth', 0.05, 104); tone(116.5, t, 1.2, 'sawtooth', 0.04, 110); noise(t, 0.6, 0.05, 300, 'lowpass'); },
+    owl: t => { tone(390, t, 0.35, 'sine', 0.035, 370); tone(380, t + 0.5, 0.6, 'sine', 0.035, 350); },
+    dog: t => { for (let i = 0; i < 2 + (Math.random() * 3 | 0); i++) { noise(t + i * 0.32, 0.12, 0.05, 700, 'bandpass', sfxBus, 4, 400); tone(300, t + i * 0.32, 0.1, 'sawtooth', 0.012, 200); } },
   };
+  let rainGain = null;
+  function weather(id) {
+    if (!ctx) return;
+    if (!rainGain) {
+      if (!noiseBuf) noise(ctx.currentTime, 0.01, 0.0001);
+      const src = ctx.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
+      const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 1400;
+      rainGain = ctx.createGain(); rainGain.gain.value = 0;
+      src.connect(f).connect(rainGain).connect(musicBus); src.start();
+    }
+    rainGain.gain.setTargetAtTime(id === 'rain' ? 0.1 : 0, ctx.currentTime, 1.5);
+  }
+  // Distant owls and dogs, now and then
+  setInterval(() => { if (!ctx || !on || document.hidden) return; if (Math.random() < 0.35) play(Math.random() < 0.5 ? 'owl' : 'dog'); }, 23000);
 
-  function play(name) {
+  function play(name, opts) {
     if (!ctx || !on) return;
     if (ctx.state === 'suspended') ctx.resume();
-    const f = SFX[name]; if (f) f(ctx.currentTime + 0.01);
+    const f = SFX[name]; if (f) f(ctx.currentTime + 0.01, opts);
   }
 
   function toggle() {
@@ -156,7 +207,7 @@ const Snd = (() => {
     if (master) master.gain.setTargetAtTime(on ? 0.7 : 0, ctx.currentTime, 0.2);
   }
 
-  return { init, play, toggle, enabled: () => on };
+  return { init, play, toggle, weather, enabled: () => on };
 })();
 
 // Browsers require a gesture before audio can start.
