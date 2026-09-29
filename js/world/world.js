@@ -1232,7 +1232,7 @@ const World = (() => {
     modal: v => (v ? modalOn() : modalOff()),
     book: v => { bookOpen = v; if (v) releasePointer(); else if (!modal) { paused = false; lock(); } },
     get mode() { return mode; }, set mode(v) { mode = v; },
-    get town() { return town; }, get pl() { return pl; }, get weather() { return weather; }, get wanted() { return W.wanted || 0; },
+    get town() { return town; }, get pl() { return pl; }, get act() { return W.act; }, get weather() { return weather; }, get wanted() { return W.wanted || 0; },
     inHaven: () => pl.inside,
     atElysium: () => false,
     exploredMask, setWaypoint: w => { waypoint = w; }, getWaypoint: () => waypoint,
