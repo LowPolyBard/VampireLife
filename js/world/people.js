@@ -348,6 +348,22 @@ const PEOPLE = (() => {
           if (n.lostT > 12) { n.state = 'walk'; n.path = null; n.aware = 0; }
           break;
         }
+        case 'charmed': {
+          // follows you, a pace behind, into whatever dark you choose
+          n.charmT -= dt;
+          const d = Math.hypot(dx, dz);
+          if (d > 1.5) { speed = Math.min(3.2, 1 + d * 0.6); steer(n, pl.x - dx / d * 1.2, pl.z - dz / d * 1.2, speed, dt); }
+          else n.yaw = Math.atan2(dx, dz);
+          if (n.charmT <= 0 || d > 14) { n.state = 'walk'; n.path = null; n.aware = 1.2; W.onWake && W.onWake(n); }
+          break;
+        }
+        case 'entranced':
+          n.charmT -= dt;
+          n.yaw = Math.atan2(dx, dz);
+          if (n.charmT <= 0) { n.state = 'walk'; n.path = null; n.aware = 1.2; W.onWake && W.onWake(n); }
+          break;
+        case 'held':
+          break;
         case 'dead':
           break;
       }
@@ -380,7 +396,7 @@ const PEOPLE = (() => {
   }
 
   function perceive(n, pl, dP) {
-    if (n.kind === 'encounter' || n.state === 'dazed' || n.state === 'leave') return;
+    if (n.kind === 'encounter' || n.state === 'dazed' || n.state === 'leave' || n.state === 'held' || n.state === 'charmed' || n.state === 'entranced') return;
     const range = n.kind === 'hunter' ? 30 : n.kind === 'watch' ? 22 : 18;
     n.canSee = false;
     if (pl.inside) { n.aware = Math.max(0, n.aware - 0.1); return; }

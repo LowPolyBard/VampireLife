@@ -238,6 +238,12 @@ const G = (() => {
   api.present = present;
 
   function result(r, then) {
+    if (api.fp) {
+      const chips = api.fx(r.d);
+      UI.notify({ title: r.title, glyph: r.glyph, text: r.text, chips, ok: r.ok });
+      (then || (() => postAction(false)))();
+      return;
+    }
     const chips = api.fx(r.d);
     UI.scene({ title: r.title, glyph: r.glyph, text: r.text, chips, outcome: r.ok, cls: r.cls,
       choices: [{ label: 'Continue', onPick: then || (() => postAction(true)) }] });
@@ -254,7 +260,7 @@ const G = (() => {
     checkAchievements();
     if (checkFatal()) return;
     if (s.blood <= 4 && !s.night.frenzied) { frenzy(() => postAction(false)); return; }
-    if (allowEvent && s.loc !== 'haven' && s.loc !== 'elysium' && R() < 0.2) {
+    if (allowEvent && !api.fp && s.loc !== 'haven' && s.loc !== 'elysium' && R() < 0.2) {
       const ev = pickEvent(s.loc);
       if (ev) { present(ev, () => postAction(false)); return; }
     }
@@ -423,6 +429,13 @@ const G = (() => {
   function gamble(title, glyph) {
     const stakes = [10, 40, 150].map(money).filter(v => v <= s.gold);
     const p = clamp(0.4 + attr('guile') * 0.035, 0.4, 0.75);
+    if (api.fp) {
+      const v = stakes.length ? stakes[Math.min(stakes.length - 1, 1)] : 0;
+      if (!v) return result({ title, glyph, text: 'You have nothing left to wager. The table laughs you out of the door.', d: {} });
+      const win = api.roll(p);
+      Snd.play(win ? 'coin' : 'fail');
+      return result({ title, glyph, ok: win, text: win ? `You stake £${v} and read the thrower's pulse all night. The dice fall your way.` : `You stake £${v}. Snake-eyes. You smile back at the table with rather too many teeth.`, d: { gold: win ? v : -v } });
+    }
     UI.scene({
       title, glyph, text: 'Tallow candles, a scarred table, bone dice and men with knives in their boots. How much will you wager?',
       choices: stakes.map(v => ({
@@ -439,6 +452,11 @@ const G = (() => {
   function ball(title, glyph) {
     const p = power('majesty') >= 3 ? 1 : api.chance('allure', s.clan === 'hollow' ? 7 : 5);
     const ok = api.roll(p);
+    if (ok && !api.lover() && R() < 0.3 && api.fp) {
+      const p2 = api.genPerson();
+      api.addLover(p2);
+      return result({ title: 'A Glance Across the Room', glyph: '❦', ok, text: `Across the candlelit room, ${p2.name} is looking at you — not with fear, not with hunger, but with something you had forgotten. By dawn you know where they live. They will be waiting in your haven.`, d: { crown: ri(6, 9), prestige: 1, humanity: 2 } });
+    }
     if (ok && !api.lover() && R() < 0.3) {
       const ev = DATA.EVENTS.find(e => e.id === 'lover_meet');
       api.fx({ crown: ri(6, 9), prestige: 1 });
@@ -611,6 +629,7 @@ const G = (() => {
   function frenzy(then) {
     s.night.frenzied = true;
     const p = clamp(0.25 + s.humanity / 200 + attr('lore') * 0.04 - (s.clan === 'vargr' ? 0.15 : 0), 0.05, 0.9);
+    if (api.fp && api.onFrenzy) { api.onFrenzy(p, then); return; }
     Snd.play('frenzy');
     UI.scene({ title: 'The Beast Awakens', glyph: '☬', cls: 'frenzy',
       text: 'The hunger is no longer a feeling. It is a <i>voice</i>, and it is screaming. Your vision floods red at the edges. Every heartbeat in the city is a drum calling you to war.',
@@ -788,6 +807,23 @@ const G = (() => {
         `${s.rival ? s.rival.name : 'A rival'} greets you with a smile like a drawn knife. You smile back.`,
         'A string quartet of mesmerised mortals plays until their fingers bleed. No one else seems to notice.',
       ]);
+      if (api.fp) {
+        const d = { prestige: ri(1, 3), crown: s.inf.crown < 30 ? 1 : 0 };
+        const lines = [gossip];
+        for (const t of [...s.tasks]) if (api.taskDone(t)) {
+          const tpl = api.taskTpl(t); s.tasks.splice(s.tasks.indexOf(t), 1);
+          const pay = tpl.pay ? tpl.pay(t) : {};
+          for (const k in pay) d[k] = (d[k] || 0) + pay[k];
+          for (const k in t.reward) d[k] = (d[k] || 0) + (k === 'gold' ? money(t.reward[k]) : t.reward[k]);
+          lines.push(`You deliver “${tpl.title}”. The Prince remembers those who are useful.`);
+        }
+        while (s.offers.length && s.tasks.length < 3) {
+          const o = s.offers.shift(), tpl = DATA.TASKS.find(t => t.id === o.id);
+          o.left = 8; o.base = tpl.counter ? (s.counters[tpl.counter] || 0) : 0; s.tasks.push(o);
+          lines.push(`The seneschal hands you a petition: <b>${tpl.title}</b> — ${tpl.desc(o)}`);
+        }
+        return result({ title: 'Elysium', glyph: '♛', text: lines.join('<br>'), d });
+      }
       return result({ title: 'Elysium', glyph: '♛', text: `${gossip}<br><br>New petitions are offered to those who seek favour. (See the Court.)`, d: { prestige: ri(1, 3), crown: s.inf.crown < 30 ? 1 : 0 } });
     }
     if (id === 'tribute') {
@@ -838,6 +874,14 @@ const G = (() => {
       return { text: `${how}<br><br>The Primogen kneel, one by one. The crown of the night — a circlet of black iron older than the city — is placed upon your brow.<br><br><b>You are Prince of London.</b>`, d: { prestige: 50, crown: 10 } };
     };
     const lose = how => { s.rank = 2; s.prestige = Math.floor(s.prestige / 2); return { text: `${how}<br><br>You are stripped of your titles and cast down to Ancilla. That you still exist is the Prince's idea of mercy.`, d: { health: -50 } }; };
+    if (api.fp) {
+      const opts = [[pDuel, 'Fang against fang in the ruined nave. Old as they are, the Prince is slow, and you are hungry.', 'They break you like a toy and hang you in chains until dawn creeps close.'],
+        [pCons, 'The Prince\'s own ghouls open the doors at noon. The coffin is dragged into the sunlight.', 'A traitor among your conspirators. The Prince was waiting.'],
+        [pAccl, 'You speak, and Elysium listens — and then, one by one, the Primogen turn their backs on the old Prince.', 'Silence. No one stands with you.']].sort((a, b) => b[0] - a[0]);
+      const [p0, w, l] = opts[0];
+      const r = api.roll(p0) ? win(w) : lose(l);
+      return result({ title: 'The Challenge', glyph: '♔', ok: s.rank === 5, text: r.text, d: r.d });
+    }
     present({
       title: 'The Challenge', glyph: '♔',
       text: `Elysium falls silent as you step before the throne. ${s.princeName} regards you with ancient, lightless eyes. "So," the Prince says. "It has come to this. Choose your weapon, little one."`,
@@ -857,6 +901,14 @@ const G = (() => {
     UI.render(); api.save();
   };
   api.embraceLover = () => {
+    if (api.fp) {
+      const lv = api.lover(); if (!lv || s.blood < 30) return null;
+      lv.kind = 'childe'; lv.desc = 'Once your mortal love. Now your childe, for eternity.';
+      api.log(`You Embrace ${lv.name}.`, 'blood');
+      const chips = api.fx({ blood: -30, humanity: -3, prestige: -3 });
+      UI.notify({ title: 'The Embrace', glyph: '✧', text: `${lv.name} dies in your arms, as they would have died anyway, someday. And then they open their eyes, and look at you with hunger — and with love.`, chips });
+      checkAchievements(); postAction(false); return true;
+    }
     const lv = api.lover(); if (!lv || s.blood < 30) return;
     present({ title: 'The Embrace', glyph: '✧',
       text: `You tell ${lv.name} everything. They are silent for a long time. Then they take your cold hand. "Forever, then," they say. "If you'll have me."`,
@@ -890,6 +942,93 @@ const G = (() => {
     ];
     if (power('mesmerism') >= 3) choices.push({ label: 'Take their memories', sub: 'Mesmerism III · no blood spilled', chance: () => api.chance('lore', diff - 2), run: (x, ok) => { if (ok) { s.hunter = null; s.stats.huntersSlain++; api.count('hunter_slain'); return { text: `${h.name} wakes the next morning with no memory of vampires — or of why they ever came to London.`, d: { susp: -12, prestige: 5 } }; } return hurt('Their faith is a wall your gaze cannot climb.'); } });
     present({ title: h.name, glyph: '✠', text: `The hunter's lodging is a narrow house with garlic on the lintel and salt on the sill. Candlelight in an upper window. ${h.name} is home, and awake.`, choices }, () => postAction(false));
+  };
+
+  /* ==================================================================
+     First person: feeding, the watch, the hunter, the Beast
+     ================================================================== */
+  api.huntChance = (stat, v, extra = 0) => huntChance(stat, v, extra + (stat === 'lore' ? 0.27 : 0));
+  api.huntRoll = (stat, v, extra = 0) => api.roll(api.huntChance(stat, v, extra));
+  api.bindCost = 8;
+  api.canBind = v => !!(v.role && api.ghoulRoom());
+  // How much blood a full draining would give
+  api.vesselBlood = (v, did) => Math.round(v.vit * 1.55 * bloodMult(v, dist(did)));
+
+  api.feedFinish = (v, did, frac, o = {}) => {
+    const d = dist(did); frac = clamp(frac, 0, 1);
+    const xs = o.extraSusp || 0;
+    let tier = frac >= 0.999 ? 'drain' : frac >= 0.62 ? 'deep' : 'sip';
+    const dd = { blood: Math.max(2, Math.round(v.vit * 1.55 * bloodMult(v, d) * frac)) };
+    s.resonance = { h: v.humour, str: tier === 'drain' ? 2 : 1, n: 2 };
+    s.feeds++;
+    let text = '';
+    if (o.bind && api.canBind(v) && tier !== 'drain' && s.blood + dd.blood >= api.bindCost + 2) {
+      tier = 'ghoul';
+      api.addCircle({ kind: 'ghoul', role: v.role, name: v.name, age: v.age, occ: v.occ, loyalty: 55 });
+      dd.blood -= api.bindCost; dd.susp = feedSusp(1, d) + xs; dd.humanity = -1;
+      text = `${v.name} drinks from your wrist — hesitantly, then greedily. They are yours now: your ${DATA.ROLES[v.role].name.toLowerCase()}.`;
+    } else if (tier === 'drain') {
+      api.addVictim({ name: v.name, occ: v.occ, where: d.names[era().id] });
+      if (v.cls === 'holy') api.count('drain_holy');
+      if (v.cls === 'high') api.count('drain_high');
+      Snd.play('drain');
+      dd.humanity = -(3 + Math.floor(s.humanity / 25)); dd.susp = feedSusp(10, d) + xs;
+      dd.essence = Math.round((3 + s.potency) * (power('sanguimancy') >= 2 ? 1.5 : 1));
+      text = `The heartbeat slows, stumbles, and ends. The last of ${v.name} pours into you — their fear, their memories of ${pick(['a mother\'s hands', 'a summer field', 'a lover\'s laugh', 'a dead child', 'the sea'])}, their life.`;
+    } else if (tier === 'deep') {
+      dd.humanity = s.humanity > 40 ? -1 : 0; dd.susp = feedSusp(3, d) + xs; dd.essence = 2;
+      text = `${v.name} slumps against the wall, grey-lipped. Alive. Probably.`;
+    } else {
+      dd.susp = feedSusp(1, d) + xs; dd.essence = 1;
+      text = `${v.name} blinks in the lamplight, remembering nothing but a pleasant dream.`;
+      if (o.gentle && s.herd < api.herdCap() && api.roll(api.chance('allure', 4 + Math.floor(v.wary / 2)))) {
+        tier = 'herd'; dd.herd = 1;
+        text = `You whisper to ${v.name} as you drink. They will come to your door again, and again, and never quite know why.`;
+      }
+    }
+    const chips = api.fx(dd);
+    checkAchievements();
+    return { tier, chips, text };
+  };
+  api.feedFail = (v, did, xs = 0) => {
+    const d = dist(did);
+    const hurt = power('nightwings') >= 2 ? 0 : Math.round(ri(4, 9) * d.danger / 2);
+    const chips = api.fx({ health: -hurt, susp: feedSusp(6, d) + xs });
+    return chips;
+  };
+  // Frenzy resolved in the street: ok = the Beast was chained
+  api.frenzyResolve = (ok, v) => {
+    if (ok) return api.fx({ health: -5 });
+    api.addVictim({ name: v.name, occ: v.occ || 'stranger', where: api.distName(s.loc) });
+    return api.fx({ blood: 40, humanity: -5, susp: feedSusp(14, { heat: 1 }) });
+  };
+
+  api.bribeCost = () => money(12);
+  // The watch has you by the collar
+  api.watchAct = (kind, v) => {
+    const w = v.wary || 5;
+    if (kind === 'bribe') { if (s.gold < api.bribeCost()) return null; return { ok: true, chips: api.fx({ gold: -api.bribeCost(), susp: 1 }), text: 'A purse changes hands. "Mind how you go, then."' }; }
+    if (kind === 'break') { const ok = api.roll(api.chance('might', w - 1)); return { ok, chips: api.fx(ok ? { susp: 2 } : { health: -10, susp: 3 }), text: ok ? 'You twist free and are gone before the whistle reaches their lips.' : 'The cudgel cracks across your back. They still have you.' }; }
+    if (kind === 'gaze') { const ok = api.roll(api.chance('lore', w - 1, 0.1)); return { ok, chips: api.fx(ok ? { susp: -2 } : { susp: 4 }), text: ok ? '"You saw no one." They walk on, humming.' : 'Their eyes slide away from yours. They have been warned about eyes like yours.' }; }
+    // hauled off: a night in the watch-house cellar, a fine, and a name in the book
+    return { ok: false, chips: api.fx({ susp: 8, gold: -Math.min(s.gold, money(8)) }), text: 'They drag you to the watch-house and write your name in the book. You slip your chains before the sun, lighter in the purse.' };
+  };
+
+  // The hunter, fought hand to hand
+  api.hunterStrike = () => { const h = s.hunter; if (!h) return null; const ok = api.roll(api.chance('might', h.level + 3)); return { ok, dmg: ok ? ri(28, 46) + attr('might') * 2 : 0 }; };
+  api.hunterWound = dmg => { const c = api.fx({ health: -dmg }); UI.hud(); return c; };
+  api.hunterSlain = () => {
+    const h = s.hunter; if (!h) return [];
+    s.hunter = null; s.stats.huntersSlain++; api.count('hunter_slain'); api.log(`${h.name} is dead.`, 'blood');
+    const c = api.fx({ humanity: -2, susp: -12, prestige: 8, essence: 4 }); checkAchievements(); return c;
+  };
+  api.hunterForget = () => {
+    const h = s.hunter; if (!h) return null;
+    const ok = api.roll(api.chance('lore', h.level + 1));
+    if (!ok) return { ok, chips: [] };
+    s.hunter = null; s.stats.huntersSlain++; api.count('hunter_slain');
+    api.log(`${h.name} forgets you, and leaves London.`, 'gold');
+    return { ok, chips: api.fx({ susp: -10, prestige: 5 }) };
   };
 
   /* ---------------- the streets answer back (first person) ---------------- */
@@ -1090,7 +1229,8 @@ const G = (() => {
     if (hist) {
       s.histDone[hist.id] = true;
       if (hist.apply) hist.apply(s);
-      q.push(next => { Snd.play('organ'); present({ ...hist, title: hist.title, text: `<div class="eyebrow">${DATA.MONTHS[s.month]} ${s.year}</div>${hist.text}` }, next, 'history'); });
+      if (api.fp) q.push(next => { Snd.play('organ'); UI.caption({ title: hist.title, glyph: hist.glyph, cls: 'history', eyebrow: `${DATA.MONTHS[s.month]} ${s.year}`, text: typeof hist.text === 'function' ? hist.text(s) : hist.text }, next); });
+      else q.push(next => { Snd.play('organ'); present({ ...hist, title: hist.title, text: `<div class="eyebrow">${DATA.MONTHS[s.month]} ${s.year}</div>${hist.text}` }, next, 'history'); });
     }
     // Rank
     while (s.rank < 4 && s.prestige >= DATA.RANKS[s.rank + 1].prestige && s.potency >= DATA.RANKS[s.rank + 1].potency) {
@@ -1101,7 +1241,7 @@ const G = (() => {
     }
     // Lover grows old
     const lv = api.lover();
-    if (lv && lv.age >= 50 && !lv.askedOld) {
+    if (lv && lv.age >= 50 && !lv.askedOld && !api.fp) {
       lv.askedOld = true;
       q.push(next => present({ title: 'Grey at the Temples', glyph: '♡', text: `${lv.name} is ${lv.age} now. There is grey in their hair, and lines around the eyes that laugh at your jokes. You have not changed at all. They have noticed.`,
         choices: [
@@ -1110,7 +1250,7 @@ const G = (() => {
         ] }, next));
     }
     // Dusk event
-    if (R() < 0.42) { const ev = pickEvent('dusk'); if (ev) q.push(next => present(ev, next)); }
+    if (!api.fp && R() < 0.42) { const ev = pickEvent('dusk'); if (ev) q.push(next => present(ev, next)); }
     // Frenzy
     q.push(next => { if (s.blood <= 10) frenzy(next); else next(); });
 

@@ -21,8 +21,68 @@ const UI = (() => {
 
   /* ---------------- scenes (modal) ---------------- */
   function scene(sc) {
+    // In the first person there are no dialogue choices: scenes become narration.
+    if (G.fp && !sc.sys && G.s && !G.s.ending) {
+      const cs = (sc.choices || []).filter(c => !c.disabled);
+      const auto = cs.find(c => !/dark/.test(c.cls || '')) || cs[0];
+      return caption(sc, () => { if (auto && auto.onPick) auto.onPick(); });
+    }
     if (current) { queue.push(sc); return; }
     show(sc);
+  }
+
+  /* ---------------- captions: narration without choices ---------------- */
+  const capQ = [];
+  let capOn = null;
+  function caption(sc, then) {
+    capQ.push({ sc, then });
+    if (!capOn) nextCaption();
+  }
+  function nextCaption() {
+    const it = capQ.shift();
+    let root = document.getElementById('caption-root');
+    if (!root) { root = document.createElement('div'); root.id = 'caption-root'; document.body.appendChild(root); }
+    if (!it) { capOn = null; root.innerHTML = ''; if (typeof World !== 'undefined' && World.mode === 'play' && !current) World.modal(false); if (G.s && !G.s.ending) render(); return; }
+    capOn = it;
+    if (typeof World !== 'undefined') World.modal(true);
+    const sc = it.sc;
+    const paras = String(sc.text || '').split(/<br\s*\/?><br\s*\/?>/).filter(Boolean);
+    const chips = sc.chips && sc.chips.length ? `<div class="chips">${sc.chips.map(chipHtml).join('')}</div>` : '';
+    const ledger = sc.ledger && sc.ledger.length ? `<ul class="ledger">${sc.ledger.map(l => `<li class="${l.cls || ''}">${l.t}</li>`).join('')}</ul>` : '';
+    root.innerHTML = `<div class="caption ${sc.cls || ''}">
+        ${sc.glyph ? `<div class="cp-glyph">${sc.glyph}</div>` : ''}
+        ${sc.eyebrow ? `<div class="eyebrow">${sc.eyebrow}</div>` : ''}
+        ${sc.title ? `<h2 class="cp-title">${sc.title}</h2>` : ''}
+        <div class="cp-text">${paras.map((p, i) => `<p style="animation-delay:${0.2 + i * 0.5}s">${p}</p>`).join('')}</div>
+        ${chips}${ledger}
+        <div class="cp-hint">${World.isTouch ? 'Tap' : 'Space'} to continue</div>
+      </div>`;
+    Snd.play('page');
+    const t0 = performance.now();
+    const words = String(sc.text || '').replace(/<[^>]+>/g, '').split(/\s+/).length + (sc.ledger ? sc.ledger.length * 12 : 0);
+    const autoMs = Math.max(4500, words * 330 + 2500);
+    let done = false;
+    const go = () => { if (done || performance.now() - t0 < 700) return; done = true; clearTimeout(timer); removeEventListener('keydown', key); root.firstElementChild.classList.add('out'); setTimeout(() => { const th = it.then; nextCaption(); if (th) th(); }, 350); };
+    const key = e => { if (['Space', 'Enter', 'KeyE', 'Escape'].includes(e.code)) { e.preventDefault(); go(); } };
+    const timer = setTimeout(go, autoMs);
+    addEventListener('keydown', key);
+    root.firstElementChild.addEventListener('click', go);
+  }
+
+  /* ---------------- notifications: results that do not stop the night ---------------- */
+  function notify(n) {
+    let box = document.getElementById('notes');
+    if (!box) { box = document.createElement('div'); box.id = 'notes'; document.body.appendChild(box); }
+    const el = document.createElement('div');
+    el.className = 'note' + (n.ok === false ? ' bad' : n.ok === true ? ' good' : '');
+    const txt = String(n.text || '').replace(/<br\s*\/?>/g, ' ');
+    el.innerHTML = `${n.title ? `<div class="n-title">${n.glyph ? `<span>${n.glyph}</span>` : ''}${n.title}</div>` : ''}${txt ? `<div class="n-text">${txt}</div>` : ''}${n.chips && n.chips.length ? `<div class="chips">${n.chips.map(chipHtml).join('')}</div>` : ''}`;
+    box.appendChild(el);
+    while (box.children.length > 4) box.firstElementChild.remove();
+    const life = Math.max(5000, txt.split(/\s+/).length * 320 + 2500);
+    setTimeout(() => el.classList.add('out'), life);
+    setTimeout(() => el.remove(), life + 700);
+    if (n.chips && n.chips.length && typeof HUD !== 'undefined') HUD.floatChips(n.chips);
   }
 
   function chipHtml(c) {
@@ -37,12 +97,12 @@ const UI = (() => {
     if (!sc.choices || !sc.choices.length) sc.choices = [{ label: 'Continue' }];
     const paras = String(sc.text || '').split(/<br\s*\/?><br\s*\/?>/).filter(Boolean);
     let delay = 0;
-    const pHtml = paras.map(p => { const h = `<p style="animation-delay:${delay}s">${p}</p>`; delay += 0.35; return h; }).join('');
+    const pHtml = paras.map(p => { const h = `<p style="animation-delay:${delay}s">${p}</p>`; delay += 0.2; return h; }).join('');
     const outcome = sc.outcome === true ? '<div class="outcome win">Success</div>' : sc.outcome === false ? '<div class="outcome lose">Failure</div>' : '';
     const chips = sc.chips && sc.chips.length ? `<div class="chips" style="animation-delay:${delay}s">${sc.chips.map(chipHtml).join('')}</div>` : '';
     const ledger = sc.ledger && sc.ledger.length ? `<ul class="ledger" style="animation-delay:${delay}s">${sc.ledger.map(l => `<li class="${l.cls || ''}">${l.t}</li>`).join('')}</ul>` : '';
     const choices = sc.choices.map((c, i) => `
-      <button class="choice ${c.cls || ''} ${c.disabled ? 'disabled' : ''}" data-choice="${i}" ${c.disabled ? 'disabled' : ''} style="animation-delay:${delay + 0.15 + i * 0.07}s">
+      <button class="choice ${c.cls || ''} ${c.disabled ? 'disabled' : ''}" data-choice="${i}" ${c.disabled ? 'disabled' : ''} style="animation-delay:${delay + 0.05 + i * 0.05}s">
         <span class="c-key">${i + 1}</span>
         <span class="c-main"><span class="c-label">${c.label}</span>${c.sub ? `<span class="c-sub">${c.sub}</span>` : ''}
         ${c.tags ? `<span class="c-tags">${c.tags.map(t => `<span class="tag" ${t.c ? `style="color:${t.c};border-color:${t.c}55"` : ''}>${t.t}</span>`).join('')}</span>` : ''}</span>
@@ -172,13 +232,13 @@ const UI = (() => {
   }
 
   function codex() {
-    scene({ title: 'The Codex', glyph: '☥', cls: 'codex', text: `
+    scene({ sys: true, title: 'The Codex', glyph: '☥', cls: 'codex', text: `
       <b>You are a vampire in London, from the Black Death of 1348 to the turn of the twentieth century.</b> Each night you rise in your haven and walk the city in your own dead skin. The candles at the top of the screen are the hours until dawn; they burn as you walk, and every deed costs more of them. When the last one gutters, you must be back in your coffin — or burn.
-      <br><br><b>Hunting.</b> The city is full of the living, each with a name, a trade and a heartbeat. Hold <b>Q</b> for blood sense: the living glow through walls in the colour of their <i>humour</i> — Sanguine, Choleric, Melancholic, Phlegmatic — each strengthening you for two nights. Walk up to a mortal and press <b>E</b>. Take them from behind, in shadow, with no witnesses, and they will never see you coming. Take them under a lantern in a crowd, and the whole street will scream.
+      <br><br><b>Hunting.</b> The city is full of the living, each with a name, a trade and a heartbeat. Hold <b>Q</b> for blood sense: the living glow through walls in the colour of their <i>humour</i> — Sanguine, Choleric, Melancholic, Phlegmatic — each strengthening you for two nights. Creep up behind a mortal and press <b>E</b> to seize them (Might); press <b>F</b> face to face to beckon them into the dark (Allure); hold <b>G</b> to catch their gaze (Mesmerism). Then <b>hold E to drink</b>: release early and they live; drink past the golden mark and you take them deep; keep drinking and their heart stops. Press <b>F</b> while feeding to bind them with your blood as a ghoul.
       <br><br><b>Stealth.</b> The eye at the bottom of the screen shows how exposed you are. Lamps and torches betray you; skulk (<b>C</b>) in the dark to go unseen. Mortals who notice you show a <b>?</b>, then a <b>!</b>. Bodies left in the street are found, and the city remembers — press <b>E</b> on a corpse to drag it into the dark. If the watch gives chase, lose them in the alleys.
       <br><br><b>Humanity</b> is your soul: killing erodes it, mercy restores it. At zero, the Beast takes you forever. <b>Suspicion</b> brings hunters who stalk the streets and, at 100 threat, raid your haven by day.
       <br><br><b>The city.</b> Lanterns mark every place of note: taverns, the cathedral, the guildhall, the docks — each with its own deeds. <b>Elysium</b> hides behind a red lantern in Westminster. Your <b>haven</b> is marked ⚰ on your compass; step inside to rest, drink from your herd, see your lover, or sleep in <b>torpor</b> for decades. The city is different in every chronicle, and it is rebuilt with every age.
-      <br><br><b>Keys:</b> WASD move · Mouse look · Shift run · C skulk · Space leap · E act · Q blood sense · R mend flesh · Tab grimoire · M map · Esc pause · 1–9 choose.` });
+      <br><br><b>Keys:</b> WASD move · Mouse look · Shift run · C skulk · Space leap · E / F / G act (some must be held) · Q blood sense · R mend flesh · Tab grimoire · M map · Esc pause.` });
   }
 
   /* ==================================================================
@@ -292,7 +352,7 @@ const UI = (() => {
         World.startGame();
         render();
         duskCard(() => { G.checkAchievements(); render(); scene({ title: 'The First Night', glyph: '☾', eyebrow: 'How to walk the night',
-          text: `You wake in the dark beneath St Bartholomew's, and you are <span class="blood-word">hungry</span>.<br><br><b>Walk</b> with WASD and the mouse. <b>Run</b> with Shift, <b>skulk</b> with C. Hold <b>Q</b> to smell the blood of the living through walls. Walk up to a mortal and press <b>E</b> to stalk them — from behind, in shadow, with no one watching, is best.<br><br>Every place of note has a lantern at its door. <b>Tab</b> opens your grimoire; <b>M</b> the map. Watch the candles: when the last one gutters, you had better be back in your coffin.`,
+          text: `You wake in the dark beneath St Bartholomew's, and you are <span class="blood-word">hungry</span>.<br><br>Creep up behind a mortal — in shadow, with no one watching — and press <b>E</b> to seize them. Then <b>hold E</b> to drink. Let go and they stagger away, alive and dreaming. Keep drinking and their heart will stop.<br><br><b>F</b> beckons a mortal to follow you into the dark. Hold <b>Q</b> to smell their blood through walls. Watch the candles: when the last one gutters, you must be back in your coffin.`,
           choices: [{ label: 'Rise' }] }); });
         return;
       }
@@ -487,7 +547,7 @@ const UI = (() => {
       ${retireBar()}
       <div class="torpor-box panel">
         <div><h4>Torpor</h4><p>Sink into the death-sleep for decades. Suspicion, hunters and debts are forgotten; your fortune grows; your blood thickens. Mortals you love will age — or die.</p></div>
-        <button class="btn ghost" data-ui="torpor" ${G.torporOptions().length && World.inHaven() ? '' : 'disabled'} title="${World.inHaven() ? '' : 'Only from your coffin'}">⚰ Enter Torpor…</button>
+        <span class="dim">Lie down in your coffin to sink into torpor.</span>
       </div>
       ${G.canSeekGolconda() ? `<div class="golconda-box panel"><div><h4>✦ The Road to Golconda</h4><p>The three leaves of the Codex are yours, and your soul is clear. You could walk the road beyond the Beast — and end your chronicle in peace.</p></div><button class="btn" data-ui="golconda">Seek Golconda</button></div>` : ''}
       <h4 class="sec">Improve Your Haven</h4>
@@ -702,7 +762,7 @@ const UI = (() => {
     const nightN = { 45: 'Brief (45s an hour)', 75: 'Normal (75s an hour)', 110: 'Long (110s an hour)', 160: 'Endless (160s an hour)' };
     const cyc = (arr, v) => arr[(arr.indexOf(v) + 1) % arr.length];
     const again = () => setTimeout(settingsMenu, 0);
-    scene({ title: 'Settings', glyph: '⚙', text: 'Adjust how the night looks and feels.',
+    scene({ sys: true, title: 'Settings', glyph: '⚙', text: 'Adjust how the night looks and feels.',
       choices: [
         { label: `Mouse sensitivity: ${sensN[S.sens] || S.sens}`, onPick: () => { S.sens = cyc([0.5, 0.75, 1, 1.5, 2], S.sens); World.saveSettings(); again(); } },
         { label: `Pixel size: ${pixN[S.pixel]}`, sub: 'Chunkier pixels are grimmer — and faster', onPick: () => { S.pixel = cyc([1, 2, 3, 4], S.pixel); World.saveSettings(); World.resize(); again(); } },
@@ -715,7 +775,7 @@ const UI = (() => {
       ] });
   }
   function menu() {
-    scene({ title: 'Chronicle Paused', glyph: '☰', text: 'Your progress is saved automatically at every dusk, every deed and every hour.',
+    scene({ sys: true, title: 'Chronicle Paused', glyph: '☰', text: 'Your progress is saved automatically at every dusk, every deed and every hour.',
       choices: [
         { label: 'Return to the night' },
         { label: 'Settings', onPick: () => setTimeout(settingsMenu, 0) },
@@ -753,5 +813,5 @@ const UI = (() => {
     document.getElementById('en-again').addEventListener('click', () => { Snd.play('click'); startCreation(); });
   }
 
-  return { scene, toast, render, renderTitle, renderEnding, duskCard, torporCard, codex, openBook, closeBook, pauseMenu, torporPrompt, hud: () => HUD.refresh(), get bookOpen() { return bookOpen; } };
+  return { caption, notify, scene, toast, render, renderTitle, renderEnding, duskCard, torporCard, codex, openBook, closeBook, pauseMenu, torporPrompt, hud: () => HUD.refresh(), get bookOpen() { return bookOpen; } };
 })();

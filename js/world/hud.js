@@ -15,6 +15,9 @@ const HUD = (() => {
     <div class="h-cross"><i></i></div>
     <div class="h-prompt"></div>
     <div class="h-card"></div>
+    <div class="h-act"></div>
+    <div class="h-foe"></div>
+    <div class="h-float"></div>
     <div class="h-marks"></div>
     <div class="h-vitals">
       <div class="vial-wrap"><div class="vial"><div class="vial-fill"></div><div class="vial-shine"></div></div><div class="vial-num"></div></div>
@@ -34,7 +37,7 @@ const HUD = (() => {
     moon: $('.moon'), moonName: $('.h-moon'), year: $('.h-year'), candles: $('.candles'), hours: $('.h-hours'), strip: $('.c-strip'),
     alert: $('.h-alert'), dist: $('.h-district'), dName: $('.hd-name'), dDesc: $('.hd-desc'), prompt: $('.h-prompt'), card: $('.h-card'),
     marks: $('.h-marks'), vial: $('.vial-fill'), vnum: $('.vial-num'), health: $('.hb.health i'), hum: $('.hb.humanity i'), susp: $('.hb.susp i'),
-    flags: $('.h-flags'), eye: $('.h-eye'), keys: $('.h-keys'), whisper: $('.h-whisper'), loc: $('.h-loc'), cross: $('.h-cross'),
+    flags: $('.h-flags'), act: $('.h-act'), foe: $('.h-foe'), float: $('.h-float'), eye: $('.h-eye'), keys: $('.h-keys'), whisper: $('.h-whisper'), loc: $('.h-loc'), cross: $('.h-cross'),
   };
   const cache = {};
   const set = (k, v, f) => { if (cache[k] !== v) { cache[k] = v; f(v); } };
@@ -110,21 +113,45 @@ const HUD = (() => {
     // visibility eye
     const vis = info.pl.vis;
     set('vis', Math.round(vis * 10), () => { E.eye.style.setProperty('--v', vis.toFixed(2)); E.eye.querySelector('b').textContent = vis < 0.28 ? 'Hidden' : vis < 0.55 ? 'Shadowed' : 'Exposed'; E.eye.className = 'h-eye ' + (vis < 0.28 ? 'lo' : vis < 0.55 ? 'mid' : 'hi'); });
-    // prompt & card
-    const tg = info.target;
-    const key = tg ? tg.label + tg.kind + (tg.o && tg.o.noticed ? 'n' : '') + (info.sensing ? 's' : '') : '';
+    // prompt: who or what is before you, and what you can do
+    const tg = info.target, acts = info.actions || [];
+    const key = (tg ? tg.title + '|' + tg.sub : '') + '|' + acts.map(a => a.key + a.label + (a.sub || '') + (a.off || '')).join(',') + (info.sensing ? 's' : '') + (tg && tg.vessel && tg.vessel.noticed ? 'n' : '');
     set('prompt', key, () => {
-      if (!tg) { E.prompt.innerHTML = ''; E.card.innerHTML = ''; E.cross.classList.remove('on'); return; }
-      E.cross.classList.add('on');
-      E.prompt.innerHTML = `<kbd>${World.isTouch ? '✋' : 'E'}</kbd><span class="p-l">${tg.label}</span>${tg.sub ? `<span class="p-s">${tg.sub}</span>` : ''}`;
-      if (tg.kind === 'vessel') {
-        const v = tg.o.v, h = DATA.HUMOURS[v.humour];
+      E.cross.classList.toggle('on', !!tg);
+      if (!tg && !acts.length) { E.prompt.innerHTML = ''; E.card.innerHTML = ''; return; }
+      E.prompt.innerHTML = `${tg ? `<div class="p-l">${tg.title}</div>${tg.sub ? `<div class="p-s">${tg.sub}</div>` : ''}` : ''}
+        <div class="p-acts">${acts.map(a => `<div class="p-a ${a.off ? 'off' : ''}" data-k="${a.key}"><kbd>${KL[a.key] || a.key}${a.hold ? '<i class="ring"></i>' : ''}</kbd><span>${a.hold ? 'Hold · ' : ''}${a.label}</span>${a.off ? `<em>${a.off}</em>` : a.sub ? `<em>${a.sub}</em>` : ''}</div>`).join('')}</div>`;
+      E.card.innerHTML = '';
+      if (tg && tg.vessel) {
+        const v = tg.vessel.v, h = DATA.HUMOURS[v.humour];
         const sense = info.sensing || G.power('mesmerism') >= 1;
-        E.card.innerHTML = `<div class="hc-name">${v.name}</div><div class="hc-occ">${G.an(v.occ)}, perhaps ${v.age}</div>
-          <div class="hc-tags">${sense ? `<span style="color:${h.color};border-color:${h.color}66">${h.name}</span><span>Vitae ${v.vit}</span><span>Wariness ${v.wary}</span>` : '<span class="dim">Hold Q to taste their blood on the air</span>'}
-          ${tg.o.noticed ? '<span class="bad">They have noticed you</span>' : '<span class="good">Unaware</span>'}</div>`;
-      } else E.card.innerHTML = '';
+        E.prompt.insertAdjacentHTML('beforeend', `<div class="hc-tags">${sense ? `<span style="color:${h.color};border-color:${h.color}66">${h.name}</span><span>Vitae ${v.vit}</span><span>Wariness ${v.wary}</span>` : '<span class="dim">Hold Q to taste their blood</span>'}
+          ${tg.vessel.state === 'charmed' ? '<span class="good">Charmed</span>' : tg.vessel.state === 'entranced' ? '<span class="good">Entranced</span>' : tg.vessel.noticed ? '<span class="bad">They have noticed you</span>' : '<span class="good">Unaware</span>'}</div>`);
+      }
     });
+    // feeding, arrest and frenzy
+    const A = info.act;
+    if (A && A.type === 'feed') {
+      const life = 1 - A.frac, gain = Math.round(A.full * A.frac);
+      const bind = G.canBind(A.v) ? `<span><kbd>F</kbd>Bind them with your blood · ${DATA.ROLES[A.v.role].name}</span>` : '';
+      const html = `<div class="fa-name">${A.v.name}</div>
+        <div class="fa-bar"><i style="width:${(life * 100).toFixed(1)}%"></i><b class="deep" style="left:38%"></b></div>
+        <div class="fa-lbl"><span>${A.frac >= 0.62 ? (A.frac > 0.9 ? 'Their heart falters…' : 'Drinking deep') : 'Their heart races'}</span><span class="blood">+${gain} blood</span></div>
+        <div class="fa-keys"><span><kbd>Hold E</kbd>Drink</span><span><kbd>Release</kbd>Let them go</span>${bind}</div>`;
+      E.act.className = 'h-act on feed' + (A.frac > 0.9 ? ' dying' : ''); if (E.act.innerHTML !== html) E.act.innerHTML = html;
+    } else if (A && A.type === 'arrest') {
+      E.act.className = 'h-act on arrest';
+      E.act.innerHTML = `<div class="fa-name">Seized by the watch</div><div class="fa-bar"><i style="width:${(A.t / 5 * 100).toFixed(1)}%"></i></div><div class="fa-lbl"><span>Act before they drag you off</span></div>`;
+    } else if (A && A.type === 'frenzy') {
+      E.act.className = 'h-act on frenzy';
+      E.act.innerHTML = `<div class="fa-name">The Beast</div><div class="fa-bar"><i style="width:${(Math.min(1, A.got / A.need) * 100).toFixed(1)}%"></i></div><div class="fa-lbl"><span>Hammer <kbd>E</kbd> to chain it</span><span>${Math.max(0, A.t).toFixed(1)}s</span></div>`;
+    } else if (E.act.className !== 'h-act') { E.act.className = 'h-act'; E.act.innerHTML = ''; }
+    // the hunter's strength, when you fight
+    const hn = info.hunter;
+    if (hn && hn.state === 'chase' && hn.dP < 25 && hn.hp !== undefined) {
+      E.foe.className = 'h-foe on';
+      E.foe.innerHTML = `<div>${G.s.hunter ? G.s.hunter.name : hn.v.name}</div><div class="foe-bar"><i style="width:${Math.max(0, hn.hp)}%"></i></div>`;
+    } else E.foe.className = 'h-foe';
     // awareness markers over heads
     let mi = 0;
     if (!info.inside) {
@@ -174,11 +201,31 @@ const HUD = (() => {
     whisper(lines[(Math.random() * lines.length) | 0]);
   }
 
+  let holdKey = null;
+  function hold(k, f) {
+    if (k !== holdKey) { E.prompt.querySelectorAll('.p-a').forEach(e => e.classList.remove('holding')); holdKey = k; }
+    if (!k) return;
+    const el = E.prompt.querySelector(`.p-a[data-k="${k}"]`);
+    if (el) { el.classList.add('holding'); el.style.setProperty('--h', Math.min(1, f).toFixed(3)); }
+  }
+  function floatText(t, col) {
+    const d = document.createElement('div'); d.className = 'fl'; d.textContent = t; if (col) d.style.color = col;
+    d.style.left = (46 + Math.random() * 8) + '%';
+    E.float.appendChild(d); setTimeout(() => d.remove(), 2200);
+  }
+  function floatChips(chips) {
+    chips.forEach((c, i) => setTimeout(() => {
+      const good = (c.v > 0 ? 1 : -1) * (DATA.POLARITY[c.k] || 1) > 0;
+      floatText(c.k === 'gold' ? `${c.v > 0 ? '+' : '−'}£${Math.abs(c.v)}` : c.k === 'havenLoss' ? 'Haven lost' : `${c.v > 0 ? '+' : '−'}${Math.abs(c.v)} ${DATA.LABELS[c.k]}`, c.k === 'blood' && c.v > 0 ? '#ff4a5c' : good ? '#a8e090' : '#ff7a7a');
+    }, i * 180));
+  }
+  function refreshPrompt() { delete cache.prompt; }
   function whisper(t, cls = '') { if (!t) return; if (whisperQ.length < 3) whisperQ.push({ t, cls }); }
   function alert(t) { E.alert.textContent = t; E.alert.classList.add('on'); alertT = 4.5; Snd.play('sting'); }
   function district(name, desc) { E.dName.textContent = name; E.dDesc.textContent = desc || ''; E.dist.classList.remove('on'); void E.dist.offsetWidth; E.dist.classList.add('on'); distT = 5; }
   function reset() { for (const k of Object.keys(cache)) delete cache[k]; whisperQ.length = 0; whisperT = 0; E.whisper.classList.remove('on'); E.alert.classList.remove('on'); voiceT = 30; }
   function show(v) { el.classList.toggle('hidden', !v); }
 
-  return { frame, refresh, whisper, alert, district, reset, show };
+  const KL = { KeyE: 'E', KeyF: 'F', KeyG: 'G' };
+  return { frame, refresh, whisper, alert, district, reset, show, hold, floatText, floatChips, refreshPrompt };
 })();

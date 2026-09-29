@@ -19,8 +19,9 @@
   <div id="touch" aria-hidden="true">
     <div class="t-stick"><div class="t-knob"></div></div>
     <div class="t-btns">
-      <button data-t="act">Act</button><button data-t="sense">Sense</button><button data-t="run">Run</button>
-      <button data-t="crouch">Skulk</button><button data-t="book">Book</button><button data-t="map">Map</button>
+      <button data-t="KeyE" class="k">E</button><button data-t="KeyF" class="k">F</button><button data-t="KeyG" class="k">G</button>
+      <button data-t="sense">Sense</button><button data-t="run">Run</button><button data-t="crouch">Skulk</button>
+      <button data-t="book">Book</button><button data-t="map">Map</button>
     </div>
   </div>
   <div id="modal-root"></div>
@@ -41,7 +42,7 @@
   <script src="js/ui.js"></script>
   <script>
     G.fp = true;
-    G.onHunt = (type, v, x) => World.onHunt(type, v, x);
+    G.onFrenzy = (p, then) => World.onFrenzy(p, then);
     G.onDawn = () => World.burn();
     G.onNight = () => World.newNight();
     World.boot();

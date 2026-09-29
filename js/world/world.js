@@ -284,43 +284,13 @@ const World = (() => {
       HUD.whisper(`A scream in the dark — someone has found ${c.v.name}.`, 'blood');
       W.wanted = Math.max(W.wanted, 40);
     },
+    onWake: n => { HUD.whisper(`${n.v.name} blinks, shivers, and hurries away, unsure why they came.`); },
     onChase: n => { HUD.alert(`${cap(n.v.occ)}! The watch is after you.`); Snd.play('whistle'); },
-    onCaught: n => { if (!G.s || modal) return; W.wanted = 0; releasePointer(); G.watchCatch(n.v, () => { if (n.v.slain) { PEOPLE.kill(n); W.corpses++; } else { n.state = 'walk'; n.path = null; n.aware = 0; } }); },
-    onHunterSees: n => { HUD.alert(`${G.s.hunter ? G.s.hunter.name : 'The hunter'} has seen you.`); Snd.play('fail'); },
+    onCaught: n => { if (!G.s || modal || W.act) return; if (n.kind === 'hunter') { n.state = 'chase'; return; } arrest(n); },
+    onHunterSees: n => { HUD.alert(`${G.s.hunter ? G.s.hunter.name : 'The hunter'} has seen you.`); Snd.play('sting'); if (n.hp === undefined) n.hp = 100; },
   };
   const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
   function panOf(x, z) { const dx = x - pl.x, dz = z - pl.z, d = Math.hypot(dx, dz) || 1; return (dx * Math.cos(pl.yaw) - dz * Math.sin(pl.yaw)) / d; }
-
-  // Called by G.onHunt at each turn of a feeding
-  function onHunt(type, v, extra) {
-    const n = W.prey; if (!n) return;
-    const wit = W.preyWitnesses || [];
-    const loud = ['drain', 'struggle', 'spotted', 'flee', 'forcefeed'].includes(type);
-    switch (type) {
-      case 'sip': case 'deep': case 'herd': case 'vanish-fed':
-        n.state = 'dazed'; n.dazeT = 20; n.path = null; n.v.fed = true; feedFx = 1; break;
-      case 'ghoul': n.state = 'leave'; n.path = null; n.v.bound = true; feedFx = 1; break;
-      case 'drain': PEOPLE.kill(n); feedFx = 1.4; W.corpses++; break;
-      case 'spotted': n.state = 'flee'; n.fleeT = 12; n.path = null; PEOPLE.scream(n, 1.3); break;
-      case 'flee': n.state = 'flee'; n.fleeT = 10; n.path = null; break;
-      case 'struggle': n.state = 'flee'; n.fleeT = 10; n.path = null; W.wanted = 90; flash = 0.8; break;
-      case 'vanish': case 'forget': n.state = 'dazed'; n.dazeT = 8; n.path = null; break;
-      case 'pass': n.state = 'walk'; n.path = null; break;
-    }
-    if (loud || (wit.length && (type === 'drain' || type === 'deep'))) {
-      for (const w of wit) if (w.state !== 'dead') { if (w.kind === 'watch') { w.state = 'chase'; w.path = null; } else { w.state = 'flee'; w.fleeT = 10; w.path = null; PEOPLE.scream(w, 1); } }
-      if (wit.length || type === 'struggle' || type === 'spotted') W.wanted = Math.max(W.wanted, 60 + wit.length * 15);
-    }
-    if (type === 'frenzy') { const c = PEOPLE.spawn({ x: pl.x + Math.sin(pl.yaw) * 1.2, z: pl.z + Math.cos(pl.yaw) * 1.2, v: extra }); PEOPLE.kill(c); W.corpses++; }
-  }
-
-  function onHunter(result) {
-    const n = W.hunterNpc;
-    if (!n) return;
-    if (result === 'slain') { PEOPLE.kill(n); n.persistent = false; W.hunterNpc = null; }
-    else if (result === 'gone') { n.state = 'leave'; n.persistent = false; W.hunterNpc = null; }
-    else { n.state = 'walk'; n.path = null; n.aware = 0; n.cool = 25; }
-  }
 
   /* ==================================================================
      Night lifecycle
@@ -341,19 +311,9 @@ const World = (() => {
     PEOPLE.setEra(s.eraId);
     const R = WU.rng(s.seed + s.turn * 131);
     rollWeather(s, R);
-    W = { wanted: 0, corpses: 0, prey: null, encounters: [], hunterNpc: null, lastLoc: null, bell: s.hours, warned: false, spawnedHunter: false, seen: {} };
+    W = { wanted: 0, corpses: 0, act: null, hunterNpc: null, lastLoc: null, bell: s.hours, warned: false, spawnedHunter: false, seen: {} };
     s.night.min = s.night.min || 0;
     enterHaven(true);
-    // encounters: strangers with stories, waiting somewhere in the city tonight
-    const nEnc = 2 + (R() < 0.5 ? 1 : 0);
-    for (let k = 0; k < nEnc; k++) {
-      const did = R.pick(['cheapside', 'southwark', 'stpauls', 'westminster', 'docks', 'whitechapel', 'graveyard']);
-      const ev = G.pickEvent(did, true);
-      if (!ev || W.encounters.some(e => e.ev.id === ev.id)) continue;
-      const cell = randomCell(did, R);
-      if (!cell) continue;
-      W.encounters.push({ ev, did, x: cell[0], z: cell[1], used: false });
-    }
     HUD.reset();
   }
 
@@ -408,13 +368,17 @@ const World = (() => {
       if (mode !== 'play') return;
       if (e.code === 'Tab' || e.code === 'KeyJ') { e.preventDefault(); if (!modal) { if (bookOpen) UI.closeBook(); else UI.openBook(); } return; }
       if (e.code === 'KeyM' && !modal) { if (bookOpen) UI.closeBook(); else UI.openBook('city'); return; }
-      if (modal || bookOpen || paused) return;
-      if (e.code === 'KeyE' || e.code === 'KeyF') interact();
+      if (modal || bookOpen) return;
+      if (W.act && W.act.type === 'frenzy' && e.code === 'Space') { pressKey('Space'); return; }
+      if (paused && !isTouch) return;
+      if (!e.repeat && (KEYS.includes(e.code))) pressKey(e.code);
       if (e.code === 'KeyR') quickMend();
       if (e.code === 'KeyH') takeWing();
       if (e.code === 'Space' && pl.grounded) { pl.vy = G.power('nightwings') >= 1 ? 6.2 : 4.4; pl.grounded = false; }
     });
     addEventListener('keyup', e => { keys[e.code] = false; });
+    addEventListener('mousedown', e => { if (e.button === 0 && document.pointerLockElement === canvas) { keys.Mouse0 = true; if (!W.act || W.act.type !== 'feed') pressKey('KeyE'); keys.KeyE = true; } });
+    addEventListener('mouseup', e => { if (e.button === 0) { keys.Mouse0 = false; keys.KeyE = false; } });
     addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
     canvas.addEventListener('click', () => { if (mode === 'play' && !modal && !bookOpen) lock(); });
     document.addEventListener('pointerlockchange', () => {
@@ -463,10 +427,11 @@ const World = (() => {
       b.addEventListener('touchstart', e => {
         e.preventDefault(); const a = b.dataset.t;
         if (mode !== 'play' || modal) return;
-        if (a === 'act') interact(); if (a === 'book') UI.openBook(); if (a === 'map') UI.openBook('city');
+        if (KEYS.includes(a)) { keys[a] = true; pressKey(a); }
+        if (a === 'book') UI.openBook(); if (a === 'map') UI.openBook('city');
         if (a === 'sense') keys.KeyQ = true; if (a === 'run') keys.ShiftLeft = !keys.ShiftLeft; if (a === 'crouch') keys.KeyC = !keys.KeyC;
       });
-      b.addEventListener('touchend', () => { if (b.dataset.t === 'sense') keys.KeyQ = false; });
+      b.addEventListener('touchend', () => { const a = b.dataset.t; if (a === 'sense') keys.KeyQ = false; if (KEYS.includes(a)) keys[a] = false; });
     });
   }
 
@@ -584,222 +549,404 @@ const World = (() => {
   }
 
   /* ==================================================================
-     Interaction
+     Interaction: context actions on E, F and G — some tapped, some held
      ================================================================== */
   let target = null;
+  const KEYS = ['KeyE', 'KeyF', 'KeyG'];
+  const KL = { KeyE: 'E', KeyF: 'F', KeyG: 'G' };
+  const act = (key, label, run, o = {}) => ({ key, label, run, ...o });
+  const pct = p => `${Math.round(p * 100)}%`;
+
   function findTarget() {
     const fx = -Math.sin(pl.yaw), fz = -Math.cos(pl.yaw);
     let best = null;
-    const consider = (o, x, z, reach, label, sub, extra = {}) => {
+    const consider = (o, x, z, reach, build, kind) => {
       const dx = x - pl.x, dz = z - pl.z, d = Math.hypot(dx, dz);
       if (d > reach) return;
       const dot = d < 0.5 ? 1 : (dx * fx + dz * fz) / d;
       if (dot < 0.62) return;
       const sc = dot * 2 - d / reach;
-      if (!best || sc > best.sc) best = { sc, o, x, z, d, label, sub, ...extra };
+      if (!best || sc > best.sc) best = { sc, o, x, z, d, kind, build };
     };
     if (pl.inside) {
-      for (const it of HAVEN.state.items) consider(it, it.x, it.z, 1.9, itemLabel(it), '', { kind: 'item' });
-      return best;
+      for (const it of HAVEN.state.items) consider(it, it.x, it.z, 1.9, havenActions, 'item');
+    } else {
+      for (const n of PEOPLE.list) {
+        if (n.state === 'dead') { if (!n.hidden) consider(n, n.x, n.z, 2.2, corpseActions, 'corpse'); continue; }
+        if (n.kind === 'hunter') { consider(n, n.x, n.z, 3.2, hunterActions, 'hunter'); continue; }
+        if (n.kind === 'encounter' || n.v.fed || n.v.bound || n.state === 'flee' || n.state === 'leave' || n.state === 'dazed') continue;
+        const reach = G.power('mesmerism') >= 1 ? 7 : n.state === 'charmed' || n.state === 'entranced' ? 2.6 : 3.4;
+        consider(n, n.x, n.z, reach, vesselActions, 'vessel');
+      }
+      for (const sd of town.sites) { const d = sd.door; consider(sd, d.x + d.nx * 0.6, d.z + d.nz * 0.6, 2.6, siteActions, 'site'); }
+      town.havens.forEach((d, lvl) => consider({ lvl, d }, d.x + d.nx * 0.6, d.z + d.nz * 0.6, 2.6, havenDoorActions, 'haven'));
+      { const d = town.elysium; consider(d, d.x + d.nx * 0.6, d.z + d.nz * 0.6, 2.6, elysiumActions, 'elysium'); }
+      if (G.s.hunter && G.s.hunter.known) { const d = town.lodging; consider(d, d.x + d.nx * 0.6, d.z + d.nz * 0.6, 2.6, lodgingActions, 'lodging'); }
     }
-    for (const n of PEOPLE.list) {
-      if (n.kind === 'encounter') { const ev = n.ev; consider(n, n.x, n.z, 2.8, ev.title, 'Someone waits in the shadows', { kind: 'encounter' }); continue; }
-      if (n.state === 'dead') { if (!n.hidden) consider(n, n.x, n.z, 2.2, `Hide the body of ${n.v.name}`, '15 minutes', { kind: 'corpse' }); continue; }
-      if (n.kind === 'hunter') { consider(n, n.x, n.z, 2.6, `Confront ${G.s.hunter ? G.s.hunter.name : 'the hunter'}`, 'They know what you are', { kind: 'hunter' }); continue; }
-      if (n.v.fed || n.v.bound || n.state === 'flee' || n.state === 'leave') continue;
-      consider(n, n.x, n.z, 2.4, `Stalk ${n.v.name}`, `${G.an(n.v.occ)}, ${n.v.trait}`, { kind: 'vessel' });
-    }
-    for (const sd of town.sites) {
-      const d = sd.door; const nm = sd.names[G.era().id];
-      consider(sd, d.x + d.nx * 0.6, d.z + d.nz * 0.6, 2.4, d.open ? nm : `Enter ${nm}`, sd.acts.map(a => G.actName(a)).join(' · '), { kind: 'site' });
-    }
-    town.havens.forEach((d, lvl) => {
-      const s = G.s;
-      const label = lvl === s.haven ? 'Enter your haven' : lvl === s.haven + 1 ? `${DATA.HAVENS[lvl].name} — for sale` : lvl < s.haven ? 'Your old haven' : DATA.HAVENS[lvl].name;
-      consider({ lvl, d }, d.x + d.nx * 0.6, d.z + d.nz * 0.6, 2.4, label, lvl === s.haven ? DATA.HAVENS[lvl].name : lvl === s.haven + 1 ? `£${G.havenCost(lvl)}` : '', { kind: 'haven' });
-    });
-    { const d = town.elysium; consider(d, d.x + d.nx * 0.6, d.z + d.nz * 0.6, 2.4, 'Elysium', 'A red lantern. The Court of the Night.', { kind: 'elysium' }); }
-    if (G.s.hunter && G.s.hunter.known) { const d = town.lodging; consider(d, d.x + d.nx * 0.6, d.z + d.nz * 0.6, 2.4, `${G.s.hunter.name}'s lodging`, 'Garlic on the lintel. Salt on the sill.', { kind: 'lodging' }); }
+    if (best) Object.assign(best, best.build(best.o, best));
     return best;
   }
-  function itemLabel(it) {
-    switch (it.kind) {
-      case 'exit': return 'Go out into the night';
-      case 'coffin': return 'Your coffin — rest, or sleep for decades';
-      case 'desk': return 'Your writing desk — affairs of the night';
-      case 'mirror': return 'The mirror';
-      case 'herd': return `Drink from ${it.name.toLowerCase()}`;
-      case 'lover': return `${it.name}`;
-      case 'library': return 'Study the forbidden';
-      case 'cellar': return 'Draw from the cellar';
-      default: return it.name;
-    }
-  }
 
-  function interact() {
-    if (!target || modal) return;
-    const s = G.s, o = target.o;
-    switch (target.kind) {
-      case 'vessel': return lunge(o);
-      case 'encounter': {
-        releasePointer();
-        o.persistent = false;
-        const enc = W.encounters.find(e => e.npc === o); if (enc) enc.used = true;
-        s.eventsDone[o.ev.id] = true;
-        G.present(o.ev, () => { o.state = 'walk'; o.kind = 'citizen'; o.path = null; G.postAction(false); });
-        return;
-      }
-      case 'corpse': {
-        o.hidden = true; o.found = true;
-        spend(15);
-        o.f.root.visible = false; if (o.pool) o.pool.visible = false;
-        HUD.whisper(`You drag ${o.v.name} into the dark, where no one will find them before dawn.`);
-        Snd.play('drag');
-        return;
-      }
-      case 'hunter': releasePointer(); return G.hunterStreet(r => onHunter(r));
-      case 'site': return siteMenu(o);
-      case 'haven': return havenDoor(o);
-      case 'elysium': return elysiumMenu();
-      case 'lodging': releasePointer(); G.s.loc = 'lodging'; return G.hunterAct('confront');
-      case 'item': return havenItem(o);
-    }
-  }
-
-  function lunge(n) {
-    if (W.lunge) return;
-    const s = G.s;
-    // how the moment stands: are they looking? is it dark? who is watching?
+  /* ---- the living ---- */
+  function facing(n) {
+    // how the mortal stands relative to you: from behind, or face to face
     const ang = Math.atan2(pl.x - n.x, pl.z - n.z);
     let da = ang - n.yaw; while (da > Math.PI) da -= 6.283; while (da < -Math.PI) da += 6.283;
-    const behind = Math.abs(da) > 1.6 && !n.noticed;
-    const dark = pl.vis < 0.35;
-    const wit = PEOPLE.witnesses(n, pl);
-    W.prey = n; W.preyWitnesses = wit;
-    const bonus = { might: 0, allure: 0, guile: 0, lore: 0 }, notes = {};
-    if (behind) { bonus.might += 0.15; bonus.guile += 0.06; notes.might = 'Unseen, from behind'; }
-    else if (n.noticed) { bonus.might -= 0.1; bonus.allure += 0.05; notes.might = 'They have seen you coming'; }
-    if (dark) { bonus.might += 0.08; notes.might = (notes.might ? notes.might + ' · ' : '') + 'In deep shadow'; }
-    if (n.state === 'idle' || n.v.oid === 'drunk') bonus.guile += 0.04;
+    return Math.abs(da);
+  }
+  function vesselActions(n, tg) {
+    const v = n.v, d = tg.d;
+    const out = [];
+    const sub = `${G.an(v.occ)}, ${v.trait}`;
+    if (n.state === 'charmed' || n.state === 'entranced') {
+      out.push(act('KeyE', 'Drink', () => startFeed(n, n.state === 'charmed' ? 'allure' : 'lore'), { sub: n.state === 'charmed' ? 'They lean in, eyes half-closed' : 'They wait, empty-eyed' }));
+      return { title: v.name, sub, actions: out };
+    }
+    const behind = facing(n) > 1.7 && !n.noticed;
+    const bonus = mightBonus(n);
+    if (d < 2.3) {
+      const p = G.huntChance('might', v, bonus);
+      out.push(act('KeyE', behind ? 'Seize from behind' : 'Seize', () => seize(n, bonus), { sub: `Might · ${pct(p)}${behind ? ' · unseen' : n.noticed ? ' · they are watching you' : ''}` }));
+    }
+    if (d < 3.4 && facing(n) < 1.4) {
+      const p = G.huntChance('allure', v, 0);
+      out.push(act('KeyF', 'Beckon them into the dark', () => beckon(n), { sub: `Allure · ${pct(p)}` }));
+    }
+    if (G.power('mesmerism') >= 1 && facing(n) < 1.2) {
+      const p = G.huntChance('lore', v, 0);
+      out.push(act('KeyG', 'Hold their gaze', () => mesmerize(n), { hold: Math.max(0.7, 1.9 - G.attr('lore') * 0.1), sub: `Mesmerism · ${pct(p)}` }));
+    }
+    return { title: v.name, sub, actions: out, vessel: n };
+  }
+  function mightBonus(n) {
+    let b = 0;
+    if (facing(n) > 1.7 && !n.noticed) b += 0.15;
+    else if (n.noticed) b -= 0.1;
+    if (pl.vis < 0.35) b += 0.08;
+    if (pl.crouch > 0.5) b += 0.04;
+    return b;
+  }
+  function witnessInfo(n, quiet) {
+    let wit = PEOPLE.witnesses(n, pl);
+    if (quiet) wit = wit.filter(w => w.dP < 9);
     const watch = wit.filter(w => w.kind === 'watch').length;
-    const extraSusp = Math.min(20, wit.length * 3 + watch * 4);
-    const witText = wit.length ? `${wit.length} witness${wit.length > 1 ? 'es' : ''}${watch ? ` (${watch} of the watch)` : ''}` : 'No one is watching';
-    W.lunge = { n, t: 0.45, go: () => {
-      n.state = 'held'; n.path = null;
-      releasePointer();
-      spend(25);
-      G.fpHunt(n.v, TOWN.districtAt(town, n.x, n.z), { bonus, notes, extraSusp, witText, behind, dark });
-    } };
+    return { wit, xs: Math.min(20, wit.length * 3 + watch * 4) };
+  }
+  function seize(n, bonus) {
+    const s = G.s, did = TOWN.districtAt(town, n.x, n.z);
+    spend(10);
     Snd.play('lunge');
+    if (G.huntRoll('might', n.v, bonus)) return startFeed(n, 'might');
+    const { wit, xs } = witnessInfo(n);
+    const chips = G.feedFail(n.v, did, xs);
+    n.state = 'flee'; n.fleeT = 12; n.path = null; PEOPLE.scream(n, 1.3);
+    W.wanted = Math.max(W.wanted, 50 + wit.length * 15);
+    flash = 0.5;
+    UI.notify({ title: 'They break free', glyph: '✖', ok: false, text: `${n.v.name} twists out of your grip and runs, screaming.`, chips });
+    G.postAction(false);
+  }
+  function beckon(n) {
+    spend(5);
+    if (G.huntRoll('allure', n.v, 0)) {
+      n.state = 'charmed'; n.charmT = 50; n.path = null;
+      HUD.whisper(`${n.v.name} smiles, uncertain, and follows. Lead them somewhere dark.`);
+      Snd.play('heartbeat');
+    } else {
+      n.state = 'walk'; n.path = null; n.speed = 2; n.aware = 1.5; n.noticed = true;
+      const chips = G.s ? [] : [];
+      HUD.whisper(`${n.v.name} flinches from your cold hand and hurries away.`);
+      if (n.v.wary >= 5) { n.state = 'flee'; n.fleeT = 6; PEOPLE.scream(n, 0.6); }
+    }
+  }
+  function mesmerize(n) {
+    spend(5);
+    if (G.huntRoll('lore', n.v, 0)) {
+      n.state = 'entranced'; n.charmT = 40; n.path = null;
+      HUD.whisper(`${n.v.name}'s pupils swell to black moons. They will not move until you let them.`);
+    } else {
+      n.aware = 2; n.noticed = true;
+      if (n.v.wary >= 4) { n.state = 'flee'; n.fleeT = 8; n.path = null; PEOPLE.scream(n, 0.8); W.wanted = Math.max(W.wanted, 30); }
+      HUD.whisper('Their eyes slide away from yours. The spell breaks.');
+    }
   }
 
-  function siteMenu(sd) {
+  /* ---- feeding: hold to drink, let go to spare them ---- */
+  function startFeed(n, how) {
+    const quiet = how !== 'might';
+    const { wit, xs } = witnessInfo(n, quiet);
+    const did = TOWN.districtAt(town, n.x, n.z);
+    spend(10);
+    n.state = 'held'; n.path = null;
+    W.act = { type: 'feed', n, v: n.v, did, how, frac: 0, idle: 0, xs, wit, full: G.vesselBlood(n.v, did), beat: 0, start: G.s.blood };
+    feedFx = 1; Snd.play('bite');
+    if (!quiet || wit.length) for (const w of wit) {
+      if (w.kind === 'watch') { w.state = 'chase'; w.path = null; }
+      else if (!quiet || w.dP < 6) { w.state = 'flee'; w.fleeT = 10; w.path = null; PEOPLE.scream(w, 1); }
+    }
+    if (wit.length) W.wanted = Math.max(W.wanted, quiet ? 25 : 60 + wit.length * 12);
+  }
+  function feedFrame(dt) {
+    const A = W.act, n = A.n;
+    const drinking = keys.KeyE || keys.Mouse0;
+    if (drinking) { A.frac = Math.min(1, A.frac + dt * 0.19); A.idle = 0; }
+    else A.idle += dt;
+    // their heart slows as you drink
+    A.beat -= dt;
+    if (A.beat <= 0) { A.beat = 0.45 + A.frac * 1.3 + (A.frac > 0.85 ? Math.random() * 0.6 : 0); Snd.play('heartbeat'); feedFx = Math.min(1.4, feedFx + 0.25 + A.frac * 0.3); }
+    // hold the embrace: close behind them, at the throat
+    const bx = n.x - Math.sin(n.yaw) * 0.8, bz = n.z - Math.cos(n.yaw) * 0.8;
+    pl.x += (bx - pl.x) * Math.min(1, dt * 8); pl.z += (bz - pl.z) * Math.min(1, dt * 8);
+    const want = Math.atan2(-(n.x - pl.x), -(n.z - pl.z));
+    let da = want - pl.yaw; while (da > Math.PI) da -= 6.283; while (da < -Math.PI) da += 6.283;
+    pl.yaw += da * Math.min(1, dt * 6); pl.pitch += (-0.2 - pl.pitch) * Math.min(1, dt * 5); pl.crouch += (0.4 - pl.crouch) * Math.min(1, dt * 5);
+    n.f.head.rotation.z = 0.5 * Math.min(1, A.frac * 4); n.f.body.rotation.x = A.frac * 0.25;
+    if (A.frac >= 1 || (A.idle > 1.1 && A.frac > 0.02) || A.idle > 4) endFeed(false);
+  }
+  function endFeed(bind) {
+    const A = W.act; if (!A || A.type !== 'feed') return;
+    W.act = null;
+    const n = A.n;
+    const r = G.feedFinish(A.v, A.did, Math.max(0.04, A.frac), { bind, extraSusp: A.xs, gentle: A.how !== 'might' && !A.wit.length });
+    n.f.head.rotation.z = 0; n.f.body.rotation.x = n.a.hunch;
+    if (r.tier === 'drain') { PEOPLE.kill(n); W.corpses++; feedFx = 1.6; }
+    else if (r.tier === 'ghoul') { n.state = 'leave'; n.path = null; n.v.bound = true; }
+    else { n.state = 'dazed'; n.dazeT = 20; n.path = null; n.v.fed = true; }
+    if (r.tier === 'drain') for (const w of A.wit) if (w.state !== 'dead' && w.kind !== 'watch') { w.state = 'flee'; w.fleeT = 10; w.path = null; PEOPLE.scream(w, 1.2); }
+    const T = { sip: 'A Gentle Sip', deep: 'Drunk Deep', drain: 'Drained', ghoul: 'Blood-Bound', herd: 'A Willing Vessel' };
+    UI.notify({ title: T[r.tier], glyph: r.tier === 'drain' ? '†' : '♥', text: r.text, chips: r.chips, ok: r.tier === 'drain' ? false : undefined });
+    G.postAction(false);
+  }
+
+  /* ---- the watch has you ---- */
+  function arrest(n) {
+    if (W.act || modal) return;
+    W.wanted = 0;
+    W.act = { type: 'arrest', n, t: 5 };
+    n.state = 'held'; n.path = null;
+    Snd.play('whistle'); flash = 0.4;
+    HUD.alert(`${n.v.name}, ${n.v.occ}, has you by the collar!`);
+  }
+  function arrestActions() {
+    const A = W.act, n = A.n, s = G.s, out = [];
+    const bc = G.bribeCost();
+    out.push(act('KeyE', `Bribe them · £${bc}`, () => arrestDo('bribe'), { off: s.gold < bc ? 'You cannot afford it' : null }));
+    out.push(act('KeyF', 'Break free', () => arrestDo('break'), { sub: `Might · ${pct(G.chance('might', (n.v.wary || 5) - 1))}` }));
+    if (G.power('mesmerism') >= 1) out.push(act('KeyG', 'Hold their gaze', () => arrestDo('gaze'), { hold: 0.8, sub: `Lore · ${pct(G.chance('lore', (n.v.wary || 5) - 1, 0.1))}` }));
+    return out;
+  }
+  function arrestDo(kind) {
+    const A = W.act; if (!A || A.type !== 'arrest') return;
+    const r = G.watchAct(kind, A.n.v); if (!r) return;
+    UI.notify({ title: 'The Watch', glyph: '⚿', text: r.text, chips: r.chips, ok: r.ok });
+    if (r.ok || kind === 'hauled') { freeFromWatch(A.n, kind === 'hauled'); }
+    else { A.t = Math.max(A.t, 2.5); flash = 0.4; }
+    G.postAction(false);
+  }
+  function freeFromWatch(n, hauled) {
+    W.act = null;
+    n.state = 'idle'; n.idleT = 3; n.aware = 0; n.path = null;
+    if (hauled) {
+      spend(60);
+      const wh = town.sites.find(q => q.id === 'watchhouse');
+      if (wh) { pl.x = wh.door.x + wh.door.nx * 1.5; pl.z = wh.door.z + wh.door.nz * 1.5; fadeIn(); }
+    } else { pl.x += Math.sin(pl.yaw) * -0.8; pl.z += Math.cos(pl.yaw) * -0.8; }
+  }
+
+  /* ---- the hunter, hand to hand ---- */
+  function hunterActions(n, tg) {
+    const s = G.s, out = [];
+    if (tg.d < 2.6) out.push(act('KeyE', 'Strike', () => strikeHunter(n), { sub: `Might · ${pct(G.chance('might', s.hunter ? s.hunter.level + 3 : 5))}` }));
+    if (G.power('mesmerism') >= 3) out.push(act('KeyG', 'Take their memories', () => { const r = G.hunterForget(); if (r && r.ok) { UI.notify({ title: 'Forgotten', glyph: '◉', text: `${n.v.name} lowers the crossbow and asks you the way to the river.`, chips: r.chips }); n.state = 'leave'; n.persistent = false; n.kind = 'citizen'; W.hunterNpc = null; } else HUD.whisper('Their faith is a wall your gaze cannot climb.'); }, { hold: 2 }));
+    return { title: s.hunter ? s.hunter.name : n.v.name, sub: `A hunter · ${Math.max(0, Math.round(n.hp))} / 100`, actions: out };
+  }
+  function strikeHunter(n) {
+    if ((n.hitCd || 0) > 0) return;
+    n.hitCd = 0.8;
+    const r = G.hunterStrike(); if (!r) return;
+    Snd.play('lunge');
+    if (!r.ok) { HUD.whisper('They twist aside. Steel flashes.'); return; }
+    n.hp -= r.dmg; flash = 0.25; n.f.body.rotation.x = -0.3;
+    HUD.floatText(`−${r.dmg}`, '#ff6060');
+    if (n.hp <= 0) {
+      const chips = G.hunterSlain();
+      PEOPLE.kill(n); n.persistent = false; W.hunterNpc = null; W.corpses++;
+      UI.notify({ title: 'The Hunter Is Dead', glyph: '✠', text: `${n.v.name} dies in the gutter with a stake still in their hand.`, chips });
+      G.postAction(false);
+    } else if (n.state !== 'chase') { n.state = 'chase'; n.aware = 2; n.path = null; }
+  }
+  function hunterFrame(dt) {
+    const n = W.hunterNpc; if (!n || n.state === 'dead' || !G.s.hunter) return;
+    n.hitCd = Math.max(0, (n.hitCd || 0) - dt);
+    n.shotCd = (n.shotCd === undefined ? 2 : n.shotCd) - dt;
+    n.stabCd = (n.stabCd === undefined ? 1 : n.stabCd) - dt;
+    if (n.state !== 'chase' || !n.canSee) return;
+    const lvl = G.s.hunter.level;
+    if (n.dP < 2.4 && n.stabCd <= 0) {
+      n.stabCd = 1.9;
+      if (Math.random() < 0.5) { const c = G.hunterWound(7 + lvl * 2); hurtFx(c, 'A stake grazes your ribs.'); }
+    } else if (n.dP >= 2.4 && n.dP < 16 && n.shotCd <= 0) {
+      n.shotCd = 3.6 + Math.random();
+      Snd.play('twang');
+      if (Math.random() < 0.3 + pl.vis * 0.35 - (pl.speed > 4 ? 0.15 : 0)) { const c = G.hunterWound(9 + lvl * 3); hurtFx(c, 'A crossbow bolt tears through you.'); }
+      else HUD.whisper('A bolt hums past your ear.');
+    }
+  }
+  function hurtFx(chips, text) {
+    flash = 0.9; HUD.floatChips(chips); HUD.whisper(text, 'blood');
+    if (G.s.health <= 0) G.postAction(false);
+  }
+  function lodgingActions() {
+    return { title: `${G.s.hunter.name}'s lodging`, sub: 'Garlic on the lintel. Salt on the sill.', actions: [act('KeyE', 'Break down the door', () => {
+      const d = town.lodging;
+      if (W.hunterNpc && W.hunterNpc.state !== 'dead') { PEOPLE.remove(W.hunterNpc); }
+      const hv = { name: G.s.hunter.name, oid: 'watchman', occ: 'hunter', cls: 'mid', humour: 'choleric', g: 'm', vit: 20, wary: 9, trait: 'with a crossbow' };
+      const n = PEOPLE.spawn({ x: d.x + d.nx * 1.2, z: d.z + d.nz * 1.2, hunter: true, v: hv });
+      n.hp = 100; n.state = 'chase'; n.aware = 2; n.yaw = Math.atan2(pl.x - n.x, pl.z - n.z);
+      W.hunterNpc = n; W.spawnedHunter = true;
+      Snd.play('door'); flash = 0.3;
+      HUD.alert(`${G.s.hunter.name} was waiting for you.`);
+    }, { hold: 0.8 })] };
+  }
+
+  /* ---- the Beast ---- */
+  function onFrenzy(p, then) {
+    W.act = { type: 'frenzy', p, t: 6, need: Math.round(8 + (1 - p) * 16), got: 0, then };
+    Snd.play('frenzy'); flash = 1;
+    HUD.alert('The Beast wakes. Chain it!');
+  }
+  function frenzyFrame(dt) {
+    const A = W.act;
+    A.t -= dt;
+    feedFx = 0.6 + Math.sin(t * 9) * 0.4;
+    pl.yaw += Math.sin(t * 3.1) * dt * 0.8; pl.pitch += Math.sin(t * 4.3) * dt * 0.4;
+    if (A.got >= A.need) { W.act = null; const c = G.frenzyResolve(true); UI.notify({ title: 'Mastered', glyph: '☬', ok: true, text: 'You bite your own wrist until the pain drowns the hunger. You hold. Barely. Feed — soon.', chips: c }); A.then && A.then(); return; }
+    if (A.t <= 0) {
+      W.act = null;
+      let n = null;
+      if (!pl.inside) n = PEOPLE.list.filter(q => q.state !== 'dead' && q.kind !== 'hunter' && q.dP < 25).sort((a, b) => a.dP - b.dP)[0];
+      const v = n ? n.v : { name: G.genName ? G.genName() : 'a stranger', occ: 'stranger' };
+      if (n) { pl.x = n.x - Math.sin(n.yaw) * 0.6; pl.z = n.z - Math.cos(n.yaw) * 0.6; PEOPLE.kill(n); W.corpses++; }
+      const c = G.frenzyResolve(false, v);
+      feedFx = 1.6;
+      UI.notify({ title: 'Frenzy', glyph: '☬', ok: false, text: `When you come back to yourself, ${v.name} is in your arms and there is blood to your elbows. You do not remember killing them. You remember enjoying it.`, chips: c });
+      A.then && A.then();
+    }
+  }
+
+  /* ---- places ---- */
+  function timed(hours, fn) {
+    // time passes in a blink: candles gutter, the dark comes back
+    if (hours > 0) { fadeIn(); Snd.play('page'); }
+    fn();
+  }
+  function siteActions(sd) {
     const did = sd.d, nm = sd.names[G.era().id];
     const acts = G.districtActions(did).filter(a => sd.acts.includes(a.id));
-    releasePointer();
-    UI.scene({ title: nm, glyph: sd.glyph, eyebrow: G.distName(did), text: siteText(sd),
-      choices: acts.map(a => ({ label: a.name, sub: `${a.desc} · ${a.hours}h${a.cost ? ` · £${a.cost}` : ''}${!a.avail && a.reason ? ` — ${a.reason}` : ''}`, chance: a.chance, disabled: !a.avail, onPick: () => G.doAction(a.id, did) }))
-        .concat([{ label: 'Walk on', onPick: () => {} }]) });
+    return { title: nm, sub: siteText(sd), actions: acts.slice(0, 3).map((a, i) => act(KEYS[i], a.name, () => timed(a.hours, () => G.doAction(a.id, did)),
+      { sub: `${a.hours}h${a.cost ? ` · £${a.cost}` : ''}${a.chance != null ? ` · ${pct(a.chance)}` : ''}${a.strands ? ' · dawn will catch you' : ''}`, off: a.avail ? null : a.reason })) };
+  }
+  function elysiumActions() {
+    const s = G.s, keep = s.loc;
+    s.loc = 'elysium';
+    const acts = G.courtActions().filter(a => a.id !== 'tribute');
+    s.loc = keep;
+    return { title: 'Elysium', sub: 'A red lantern over an unmarked door. The Court of the Night.', actions: acts.slice(0, 3).map((a, i) => act(KEYS[i], a.name, () => timed(a.hours, () => { s.loc = 'elysium'; G.doCourt(a.id); }),
+      { sub: `${a.hours}h${a.chance != null ? ` · ${pct(a.chance)}` : ''}`, off: a.avail ? null : a.reason, hold: a.id === 'challenge' ? 2 : 0 })) };
+  }
+  function havenDoorActions(o) {
+    const s = G.s, lvl = o.lvl, h = DATA.HAVENS[lvl];
+    if (lvl === s.haven) return { title: 'Your haven', sub: h.name, actions: [act('KeyE', 'Go inside', () => enterHaven())] };
+    if (lvl === s.haven + 1) { const c = G.havenCost(lvl); return { title: h.name, sub: `${h.desc} For sale.`, actions: [act('KeyE', `Buy it · £${c}`, () => { G.buyHaven(); if (G.s.haven === lvl) { UI.notify({ title: 'A New Haven', glyph: '⚰', text: `${h.name} is yours. Your household follows you there before dawn.` }); } }, { hold: 1.2, off: s.gold < c ? `You need £${c}` : null })] }; }
+    return { title: h.name, sub: lvl < s.haven ? 'You lived here once.' : 'Beyond your station, for now.', actions: [] };
+  }
+  function corpseActions(n) {
+    return { title: `The body of ${n.v.name}`, sub: 'Someone will find it before dawn', actions: [act('KeyE', 'Drag it into the dark', () => {
+      n.hidden = true; n.found = true; spend(15);
+      n.f.root.visible = false; if (n.pool) n.pool.visible = false;
+      HUD.whisper(`You drag ${n.v.name} into the dark, where no one will find them before dawn.`);
+      Snd.play('drag');
+    }, { hold: 1, sub: '15 minutes' })] };
   }
   function siteText(sd) {
     const e = G.era().id;
-    const T = {
-      goldsmiths: 'Shutters barred with iron. A light still burns in the counting-room, where someone is weighing coin.',
-      guildhall: 'Torchlight on carved oak and gilded arms. The masters of the livery companies keep late hours.',
-      tavern_c: e === 'georgian' ? 'Coffee, pipe-smoke and the rattle of newspapers. Every rumour in the City passes through this room.' : 'Low beams, a roaring fire and a hundred voices. Every rumour in the City passes through this room.',
-      tavern_s: 'Dice rattle on a scarred table. A man is singing about a hanged highwayman. Someone is bleeding in the corner and nobody minds.',
-      stews: 'Rose-water and candle-smoke, laughter behind curtains. Here, lonely people come to be adored.',
-      cathedral: 'The great doors stand ajar. Inside, a thousand candles and the smell of cold stone. The holy ground prickles against your dead skin.',
-      revels: 'Music spills from high windows. Carriages crowd the gate; the powerful dance here while the city starves.',
-      noble: 'A fine house with a servants\' door around the side. Every family this rich has something to hide.',
-      warehouse: 'Casks, bales and the smell of tar. The customs men are asleep, or paid, or both.',
-      watchhouse: 'A lamp in the window and a bored watchman with a very open palm.',
-      almshouse: 'Straw pallets, coughing, a thin soup that smells of nothing. The sisters here never turn anyone away.',
-      tavern_w: 'Beer, sawdust and men who know every face in the parish — including the stranger asking about the pale folk.',
-      charnel: 'Bones stacked to the ceiling in patient rows. The dead are good listeners, and sometimes they talk back.',
-      graves: 'Fresh-turned earth and a spade left leaning on a stone. The dead keep their rings, if no one takes them.',
-    };
-    return T[sd.id] || '';
+    return {
+      goldsmiths: 'A light still burns in the counting-room.', guildhall: 'The masters of the livery companies keep late hours.',
+      tavern_c: e === 'georgian' ? 'Coffee, pipe-smoke and rumour.' : 'Low beams, a roaring fire, a hundred voices.',
+      tavern_s: 'Dice rattle on a scarred table.', stews: 'Rose-water, candle-smoke and laughter behind curtains.',
+      cathedral: 'The holy ground prickles against your dead skin.', revels: 'Music spills from the high windows.',
+      noble: 'Every family this rich has something to hide.', warehouse: 'Casks, bales and the smell of tar.',
+      watchhouse: 'A bored watchman with a very open palm.', almshouse: 'The sisters here never turn anyone away.',
+      tavern_w: 'Men who know every face in the parish.', charnel: 'The dead are good listeners.', graves: 'Fresh-turned earth and a spade left leaning on a stone.',
+    }[sd.id] || '';
   }
 
-  function havenDoor(o) {
-    const s = G.s, lvl = o.lvl;
-    releasePointer();
-    if (lvl === s.haven) { modalOff(); enterHaven(); return; }
-    const h = DATA.HAVENS[lvl];
-    if (lvl === s.haven + 1) {
-      const c = G.havenCost(lvl);
-      UI.scene({ title: h.name, glyph: '⚰', text: `${h.desc}<br><br>A discreet agent will sell it to you for <b>£${c}</b>, no questions asked. Your household and herd would follow you here.`,
-        choices: [{ label: `Buy it · £${c}`, disabled: s.gold < c, sub: s.gold < c ? 'You cannot afford it yet' : 'Your haven will move here', onPick: () => { G.buyHaven(); } }, { label: 'Not tonight' }] });
-      return;
-    }
-    UI.scene({ title: h.name, glyph: '⚰', text: lvl < s.haven ? 'You lived here once. Other people\'s lives go on behind the shutters now.' : `${h.desc}<br><br>Such a place is beyond your station for now.`, choices: [{ label: 'Walk on' }] });
-  }
-
-  function elysiumMenu() {
+  /* ---- your haven ---- */
+  let torporPick = 0;
+  function havenActions(it) {
     const s = G.s;
-    releasePointer();
-    s.loc = 'elysium';
-    const acts = G.courtActions().filter(a => a.id !== 'tribute');
-    UI.scene({ title: 'Elysium', glyph: '♛', eyebrow: s.princeName, cls: 'era',
-      text: 'A red lantern over an unmarked door. Beyond it, stairs descend to a vaulted hall where the dead of London hold court: velvet, candle-smoke, and eyes that do not blink.',
-      choices: acts.map(a => ({ label: a.name, sub: `${a.desc || ''} · ${a.hours}h${!a.avail && a.reason ? ` — ${a.reason}` : ''}`, chance: a.chance, disabled: !a.avail, onPick: () => { s.loc = 'elysium'; G.doCourt(a.id); } }))
-        .concat([{ label: 'Consult the Court ledger', sub: 'Petitions, rivals, your standing', onPick: () => setTimeout(() => UI.openBook('court'), 0) }, { label: 'Leave' }]) });
-  }
-
-  function havenItem(it) {
-    const s = G.s;
-    releasePointer();
-    const deed = id => { const d = G.deeds().find(x => x.id === id); if (!d) return UI.toast('Not tonight.'); if (!d.avail) return UI.scene({ title: d.name, glyph: d.glyph, text: d.reason || 'Not tonight.', choices: [{ label: 'Very well' }] }); G.doDeed(id); };
+    const deed = (key, id, label, extra = {}) => { const d = G.deeds().find(x => x.id === id); return act(key, label || (d ? d.name : id), () => { const dd = G.deeds().find(x => x.id === id); if (dd && dd.avail) timed(dd.hours, () => G.doDeed(id)); }, { off: !d ? 'Not tonight' : d.avail ? null : d.reason, sub: d ? `${d.hours ? d.hours + 'h' : ''}` : '', ...extra }); };
     switch (it.kind) {
-      case 'exit': modalOff(); leaveHaven(); return;
-      case 'desk': UI.openBook('haven'); return;
+      case 'exit': return { title: 'The door', sub: G.distName(TOWN.districtAt(town, town.havens[s.haven].x, town.havens[s.haven].z)), actions: [act('KeyE', 'Go out into the night', () => leaveHaven())] };
       case 'coffin': {
-        const opts = G.torporOptions();
-        UI.scene({ title: 'Your Coffin', glyph: '⚰', text: `${s.hours} hour${s.hours === 1 ? '' : 's'} of darkness remain. The lid is open, and the dark inside is soft.`,
-          choices: [
-            { label: 'Lie down until dusk', sub: 'End the night', onPick: () => G.retire() },
-            { label: 'Sink into torpor…', sub: 'Sleep for decades', disabled: !opts.length, onPick: () => setTimeout(() => UI.torporPrompt(), 0) },
-            ...(G.canSeekGolconda() ? [{ label: 'Seek Golconda', sub: 'End your chronicle in peace', cls: 'gold', onPick: () => G.seekGolconda() }] : []),
-            { label: 'Not yet' },
-          ] });
-        return;
+        const opts = G.torporOptions(); if (torporPick >= opts.length) torporPick = 0;
+        const yrs = opts[torporPick];
+        return { title: 'Your coffin', sub: `${s.hours} hour${s.hours === 1 ? '' : 's'} of darkness remain`, actions: [
+          act('KeyE', 'Sleep until dusk', () => G.retire(), { hold: s.hours > 2 ? 1.2 : 0.4 }),
+          act('KeyF', yrs ? `Torpor: ${yrs} years` : 'Torpor', () => { torporPick = (torporPick + 1) % Math.max(1, opts.length); HUD.refreshPrompt(); }, { sub: 'change how long', off: opts.length ? null : 'The century is nearly done' }),
+          act('KeyG', yrs ? `Sink into the long sleep` : 'Sink into the long sleep', () => G.torpor(yrs), { hold: 2, off: yrs ? null : 'Not now', sub: yrs ? `wake in ${s.year + yrs}` : '' }),
+        ] };
       }
-      case 'mirror': {
-        const h = s.humanity;
-        const txt = h >= 80 ? 'The glass shows the room behind you, and no one in it. Still — you straighten a collar you cannot see, out of habit. Habits are how you remember you were a person.'
-          : h >= 60 ? 'Nothing. The candle, the coffin, the door. You stand there a long time, trying to remember the colour of your own eyes.'
-            : h >= 40 ? 'Nothing looks back. You find that you no longer mind, and that frightens you more than the empty glass.'
-              : h >= 20 ? 'For a moment — surely a trick of the candle — something is there. Something with too many teeth, smiling.'
-                : 'The Beast looks out of the glass at you, and it is wearing your face, and it is so very hungry.';
-        UI.scene({ title: 'The Mirror', glyph: '◌', text: txt, choices: [{ label: 'Turn away' }] });
-        return;
-      }
-      case 'herd': return deed('herdfeed');
+      case 'desk': return { title: 'Your writing desk', sub: 'Ledgers, letters, the book of your blood', actions: [act('KeyE', 'Open your grimoire', () => UI.openBook('haven')),
+        ...(G.canSeekGolconda() ? [act('KeyF', 'Seek Golconda', () => G.seekGolconda(), { hold: 3, sub: 'End your chronicle in peace' })] : [])] };
+      case 'mirror': return { title: 'The mirror', sub: '', actions: [act('KeyE', 'Look', () => HUD.whisper(mirrorLine(s.humanity), s.humanity < 40 ? 'blood' : ''))] };
+      case 'herd': return { title: it.name, sub: 'They offer wrists and throats, eyes half-closed', actions: [deed('KeyE', 'herdfeed', 'Drink from your herd')] };
       case 'lover': {
         const lv = it.c;
-        UI.scene({ title: lv.name, glyph: '♡', text: `${lv.name} looks up as you come in, and smiles the way the living smile at someone they love. They are ${lv.age}.`,
-          choices: [
-            { label: 'Spend the night with them', sub: '2h · +Humanity', onPick: () => deed('lover') },
-            { label: 'Offer them the Embrace…', sub: 'Blood −30', disabled: s.blood < 30, onPick: () => G.embraceLover() },
-            { label: 'Not tonight' },
-          ] });
-        return;
+        return { title: lv.name, sub: `Mortal · ${lv.age} years old · affection ${lv.loyalty}`, actions: [deed('KeyE', 'lover', 'Spend the night with them'),
+          act('KeyF', 'Give them your blood', () => G.embraceLover(), { hold: 2.5, sub: 'the Embrace · 30 blood', off: s.blood < 30 ? 'You need 30 blood' : null })] };
       }
-      case 'ghoul': {
-        const g = it.c, r = DATA.ROLES[g.role];
-        UI.scene({ title: g.name, glyph: r.glyph, text: `Your ${r.name.toLowerCase()}. ${r.desc}<br><br>Their devotion stands at <b>${g.loyalty}</b>. They watch your mouth as you speak, the way a dog watches a hand.`,
-          choices: [{ label: 'Dismiss them' }, { label: 'Release them from the blood bond', cls: 'dark', onPick: () => G.releaseGhoul(g.id) }] });
-        return;
-      }
-      case 'childe': UI.scene({ title: it.c.name, glyph: '✧', text: 'Your childe. They sit very still, as you taught them, and listen to the heartbeats in the street above.', choices: [{ label: 'Leave them to it' }] }); return;
-      case 'library': return deed('study');
-      case 'cellar': return deed('draw');
-      case 'chapel': UI.scene({ title: 'The Chapel of Memory', glyph: '✝', text: 'Candles for every name in the Red Ledger, and one for the person you were. You light them, one by one.', choices: [{ label: 'Remember' }] }); return;
+      case 'ghoul': { const g = it.c, r = DATA.ROLES[g.role]; return { title: g.name, sub: `Your ${r.name.toLowerCase()} · devotion ${g.loyalty}`, actions: [act('KeyE', 'Speak with them', () => HUD.whisper(`${g.name.split(' ')[0]} watches your mouth as you speak, the way a dog watches a hand. ${r.desc}`)), act('KeyF', 'Release them from the bond', () => { G.releaseGhoul(g.id); havenRebuild(); }, { hold: 2 })] }; }
+      case 'childe': return { title: it.c.name, sub: 'Your childe', actions: [act('KeyE', 'Sit with them', () => HUD.whisper('They sit very still, as you taught them, and listen to the heartbeats in the street above.'))] };
+      case 'library': return { title: 'The occult library', sub: '', actions: [deed('KeyE', 'study')] };
+      case 'cellar': return { title: 'The blood cellar', sub: `${s.cellar} measures`, actions: [deed('KeyE', 'draw')] };
+      case 'chapel': return { title: 'The chapel of memory', sub: '', actions: [act('KeyE', 'Light a candle', () => HUD.whisper(`A candle for ${s.victims.length ? s.victims[0].name : 'the person you were'}. You light them one by one.`))] };
     }
+    return { title: it.name, actions: [] };
+  }
+  function mirrorLine(h) {
+    return h >= 80 ? 'The glass shows the room behind you, and no one in it. You straighten a collar you cannot see, out of habit.'
+      : h >= 60 ? 'Nothing. You try to remember the colour of your own eyes.'
+        : h >= 40 ? 'Nothing looks back. You find that you no longer mind, and that frightens you more.'
+          : h >= 20 ? 'For a moment something is there. Something with too many teeth, smiling.'
+            : 'The Beast looks out of the glass, and it is wearing your face.';
+  }
+  function havenRebuild() { if (pl.inside) { const x = pl.x, z = pl.z, y = pl.yaw; HAVEN.build(G.s.haven, G.s, scene); pl.x = x; pl.z = z; pl.yaw = y; } }
+
+  /* ---- key handling for actions ---- */
+  let holdA = null;
+  function actionsNow() {
+    if (W.act && W.act.type === 'arrest') return arrestActions();
+    if (W.act) return [];
+    return target ? target.actions : [];
+  }
+  function pressKey(code) {
+    if (W.act && W.act.type === 'frenzy') { if (code === 'KeyE' || code === 'Space') { W.act.got++; Snd.play('heartbeat'); } return; }
+    if (W.act && W.act.type === 'feed') { if (code === 'KeyF' && G.canBind(W.act.v)) endFeed(true); return; }
+    const a = actionsNow().find(x => x.key === code);
+    if (!a) return;
+    if (a.off) { HUD.whisper(a.off); Snd.play('fail'); return; }
+    if (a.hold) { holdA = { a, code, t: 0, tgt: target && target.o }; return; }
+    a.run();
+  }
+  function holdFrame(dt) {
+    if (!holdA) { HUD.hold(null, 0); return; }
+    if (!keys[holdA.code] || (target && target.o) !== holdA.tgt && !(W.act && W.act.type === 'arrest')) { holdA = null; HUD.hold(null, 0); return; }
+    holdA.t += dt;
+    HUD.hold(holdA.a.key, holdA.t / holdA.a.hold);
+    if (holdA.t >= holdA.a.hold) { const a = holdA.a; holdA = null; HUD.hold(null, 0); a.run(); }
   }
 
-  function quickMend() { const d = G.deeds().find(x => x.id === 'mend'); if (d && d.avail) { releasePointer(); G.doDeed('mend'); } else HUD.whisper(d ? d.reason : ''); }
+  function quickMend() { const d = G.deeds().find(x => x.id === 'mend'); if (d && d.avail) G.doDeed('mend'); else HUD.whisper(d ? d.reason : ''); }
   function takeWing() {
     if (G.power('nightwings') < 3 || pl.inside) { HUD.whisper(G.power('nightwings') >= 3 ? 'You are already home.' : 'Only a master of Night Wings can fly home in an instant.'); return; }
     Snd.play('wings'); flash = 0.2; enterHaven();
@@ -858,19 +1005,14 @@ const World = (() => {
     const s = G.s;
     if (!s || s.ending) return;
     const running = !paused && !modal && !bookOpen;
-    if (W.lunge) {
-      // the lunge plays even as the world holds its breath
-      const L = W.lunge; L.t -= dt;
-      const n = L.n;
-      const dx = n.x - pl.x, dz = n.z - pl.z, d = Math.hypot(dx, dz);
-      if (d > 0.85) { pl.x += dx / d * Math.min(d - 0.85, dt * 7); pl.z += dz / d * Math.min(d - 0.85, dt * 7); }
-      const want = Math.atan2(-dx, -dz);
-      let da = want - pl.yaw; while (da > Math.PI) da -= 6.283; while (da < -Math.PI) da += 6.283;
-      pl.yaw += da * Math.min(1, dt * 10); pl.pitch += (-0.1 - pl.pitch) * Math.min(1, dt * 8);
-      n.yaw = Math.atan2(pl.x - n.x, pl.z - n.z);
-      if (L.t <= 0) { W.lunge = null; L.go(); }
-    } else if (running) {
-      movePlayer(dt);
+    if (running) {
+      const A = W.act;
+      if (A && A.type === 'feed') feedFrame(dt);
+      else if (A && A.type === 'arrest') { A.t -= dt; const n = A.n; pl.yaw += (Math.atan2(-(n.x - pl.x), -(n.z - pl.z)) - pl.yaw) * 0; if (A.t <= 0) arrestDo('hauled'); }
+      else if (A && A.type === 'frenzy') { movePlayer(dt * 0.3); frenzyFrame(dt); }
+      else movePlayer(dt);
+      holdFrame(dt);
+      if (!pl.inside) hunterFrame(dt);
       tickClock(dt);
       if (!pl.inside) {
         const loc = TOWN.districtAt(town, pl.x, pl.z);
@@ -884,7 +1026,7 @@ const World = (() => {
       if (W.wanted > 0) W.wanted = Math.max(0, W.wanted - dt * (pl.vis < 0.3 ? 3 : 1));
     }
     if (!pl.inside) {
-      if (running || W.lunge) {
+      if (running) {
         PEOPLE.populate(dt, pl, (weather.crowd || 1) * nightCrowd());
         PEOPLE.update(dt, pl, t);
         PEOPLE.tickPools(dt);
@@ -892,11 +1034,11 @@ const World = (() => {
       }
     }
     updateLights(dt);
-    const sensing = !pl.inside && running && (keys.KeyQ || keys.KeyV) || (W.lunge && keys.KeyQ);
+    const sensing = !pl.inside && running && (keys.KeyQ || keys.KeyV);
     senseLevel += ((sensing ? 1 : 0) - senseLevel) * Math.min(1, dt * 6);
     PEOPLE.setSense(senseLevel > 0.4, t);
     if (sensing && Math.random() < dt * 0.9) Snd.play('heartbeat');
-    target = running ? findTarget() : null;
+    target = running && !W.act ? findTarget() : null;
     // camera
     const eye = pl.eye - pl.crouch * 0.55 + pl.y;
     const bob = settings.bob && pl.grounded ? Math.sin(pl.bob) * 0.045 * Math.min(1, pl.speed / 3) : 0;
@@ -920,7 +1062,7 @@ const World = (() => {
     hemi.intensity = pl.inside ? 0.55 : (weather.hemi || 0.9) * (1 + u.dawn.value * 0.8);
     eyeLight.intensity = pl.inside ? 0.25 : 0.55;
     moon.intensity = pl.inside ? 0 : weather.moon;
-    HUD.frame(dt, { pl, target, sensing: senseLevel > 0.5, wanted: W.wanted, weather: weather.id, camera, people: PEOPLE.list, inside: pl.inside, havenDir: havenDir(), wp: waypointDir() });
+    HUD.frame(dt, { pl, target, act: W.act, actions: running ? actionsNow() : [], hunter: W.hunterNpc, sensing: senseLevel > 0.5, wanted: W.wanted, weather: weather.id, camera, people: PEOPLE.list, inside: pl.inside, havenDir: havenDir(), wp: waypointDir() });
   }
   let senseLevel = 0;
   function nightCrowd() {
@@ -932,17 +1074,6 @@ const World = (() => {
 
   function spawnSpecials() {
     const s = G.s;
-    // encounters appear when you come near
-    for (const e of W.encounters) {
-      if (e.used || e.npc) continue;
-      if (Math.hypot(e.x - pl.x, e.z - pl.z) < 45) {
-        const walls = TOWN.DIRS.find(([dx, dz]) => !TOWN.walkableAt(town, e.x + dx * CS, e.z + dz * CS));
-        const yaw = walls ? Math.atan2(-walls[0], -walls[1]) : 0;
-        const ex = walls ? e.x + walls[0] * 1.3 : e.x, ez = walls ? e.z + walls[1] * 1.3 : e.z;
-        const pose = /pray|grave|kneel|mother|child/i.test(e.ev.title) ? 'kneel' : 'stand';
-        e.npc = PEOPLE.spawn({ x: ex, z: ez, encounter: true, ev: Object.assign(e.ev, { pose }), yaw });
-      }
-    }
     // the hunter walks the city when they are close to finding you
     if (s.hunter && s.hunter.threat >= 30 && !W.hunterNpc && !W.spawnedHunter) {
       W.spawnedHunter = true;
@@ -950,11 +1081,10 @@ const World = (() => {
       const c = randomCell(R0.pick(['whitechapel', 'cheapside', 'southwark', 'stpauls', 'docks', did, did]), R0);
       if (c) {
         const hv = { name: s.hunter.name, oid: 'watchman', occ: 'hunter', cls: 'mid', humour: 'choleric', g: 'm', vit: 20, wary: 9, trait: 'with a crossbow under their coat' };
-        W.hunterNpc = PEOPLE.spawn({ x: c[0], z: c[1], hunter: true, v: hv });
+        W.hunterNpc = PEOPLE.spawn({ x: c[0], z: c[1], hunter: true, v: hv }); W.hunterNpc.hp = 100;
         HUD.whisper(`You smell holy water on the wind. ${s.hunter.name} is abroad tonight.`, 'blood');
       }
     }
-    if (W.hunterNpc && W.hunterNpc.cool > 0) W.hunterNpc.cool -= 0.016;
   }
   const R0 = WU.rng(99);
 
@@ -1098,7 +1228,7 @@ const World = (() => {
 
   return {
     boot, title, startGame, newNight, settings, saveSettings, resize,
-    onHunt, onHunter, spend, flyTo,
+    onFrenzy, spend, flyTo,
     modal: v => (v ? modalOn() : modalOff()),
     book: v => { bookOpen = v; if (v) releasePointer(); else if (!modal) { paused = false; lock(); } },
     get mode() { return mode; }, set mode(v) { mode = v; },
